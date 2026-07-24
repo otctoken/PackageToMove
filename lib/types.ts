@@ -33,3 +33,37 @@ export type AnalyzeResult = {
   };
   warnings: string[];
 };
+
+export type BytecodeVerification = {
+  canonicalInput: "sui-chain-bytecode";
+  bytecodeSha256: string;
+  bytecodeSize: number;
+  bytecodeVerified: boolean;
+  sourceViewGenerated: boolean;
+  functionCount: number;
+  instructionCount: number;
+  constantCount: number;
+  abortCount: number;
+  branchCount: number;
+  backwardBranchCount: number;
+  genericCallCount: number;
+  writeRefCount: number;
+};
+
+export type DecompileMetadata = {
+  engine: "rust-move-decompiler" | "zig-wasm";
+  fallback: boolean;
+  verification?: BytecodeVerification;
+  warning?: string;
+};
+
+export type RustDecompileResponse = {
+  packageId: string;
+  module: string;
+  network: Network;
+  source: string;
+  engine: "rust-move-decompiler";
+  fallback: false;
+  verification: BytecodeVerification;
+  linkageTable: unknown;
+};

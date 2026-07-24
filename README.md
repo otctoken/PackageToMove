@@ -1,15 +1,15 @@
 # SuiScope
 
-可部署到 Vercel 的 Sui Move Package 分析器。输入链上 Package ID，即可递归查看依赖、模块 ABI、原始 Bytecode IR，以及从 `.mv` 字节码重建的完整 Move 伪源码（包括 private/internal `fun`）。
+可部署到 Vercel 的 Sui Move Package 分析器。输入链上 Package ID，即可递归查看依赖、模块 ABI、原始 Bytecode IR，以及从 `.mv` 字节码重建的完整 Move 源码视图（包括 private/internal `fun`）。
 
 ## 反编译原则
 
-- 链上 `.mv` 字节码和 Bytecode IR 是唯一语义基准。
-- 浏览器端 WASM 从原始模块字节码构建 CFG，不伪造缺失的函数体。
-- CFG 使用支配关系、自然循环和分支汇合点恢复 `if/else`、`while`、`break`、`continue`。
-- Refinement 会把终止性的 abort 分支恢复为 `assert!`，把跨分支赋值恢复为 Move 合法的 `let x = if (...) { ... } else { ... }`。
-- 原始变量名、注释、排版和开发者选择的等价语法已不在字节码中，无法无损恢复；生成代码使用 `arg0`、`v0` 等稳定名称。
-- 复杂或不可约控制流仍应与界面中的 **Bytecode IR** 对照，不应把任何高级反编译文本当成源码验证证明。
+- 链上 `.mv` 字节码和 Bytecode IR 始终是唯一真相；源码视图不是原始源码证明。
+- `/api/decompile` 是 Rust Vercel Function。它自行从 Sui RPC 获取指定模块，解析并通过官方 Move bytecode verifier 后才反编译，浏览器不能提交任意字节码替换链上输入。
+- 主引擎采用固定 Sui commit 的官方 Rust `move-decompiler`，关闭优化，不经过 AI、LLM 或语义润色。
+- 反编译结果保留指令所表达的常量、函数调用、泛型实例、引用写入、分支、循环和 Abort 条件；典型条件 Abort 会显示为等价的 `assert!`。
+- Rust 服务失败时，前端才调用 `/api/bytecode` 并启用现有 Zig/WASM。界面会明确显示 **WASM FALLBACK**，不会静默冒充 Rust 校验结果。
+- 原始变量名、注释、源码排版和编译前已优化掉的表达式不在字节码中，因此不属于可恢复语义。
 
 ## 功能
 
@@ -18,7 +18,9 @@
 - 展示模块、结构体、公开函数和内部函数
 - 完整恢复函数调用、常量、分支、循环、局部值、字段读写和结构体构造
 - 下载 `.move` 与 `.mv.disasm`
-- 全浏览器 WASM 反编译，无需第三方反编译 API 或 API Key
+- Rust Vercel Function 主反编译器，Zig/WASM 浏览器端故障回退
+- 展示字节码 SHA-256、指令、常量、Abort、分支、后向分支、泛型调用和写引用统计
+- 不使用 AI 优化模式，不需要第三方反编译 API 或 API Key
 - 响应式界面，可直接部署到 Vercel
 
 ## 本地运行
@@ -36,6 +38,8 @@ npm run dev
 npm test
 npm run lint
 npm run build
+cargo test --lib
+cargo check --target x86_64-unknown-linux-gnu --bin decompile
 ```
 
 ## 重新构建 WASM
@@ -59,10 +63,10 @@ zig build wasm
 3. Framework Preset 选择 **Next.js**。
 4. 点击 **Deploy**。
 
-默认使用公共 Sui 节点。生产流量较大时，可参考 `.env.example` 配置自己的 GraphQL/RPC 节点。
+Vercel 会从根目录的 `Cargo.toml` 构建 `api/decompile.rs` Rust Function，同时构建 Next.js 前端。默认使用公共 Sui 节点；生产流量较大时，可参考 `.env.example` 配置自己的 GraphQL/RPC 节点。
 
 ## 数据限制
 
 - 单次分析最多递归 120 个 Package，防止异常依赖图耗尽 Serverless 执行时间。
-- 字节码反编译只能恢复可观察执行语义，不能证明与未知原始源码文本一致。
+- 字节码反编译恢复的是链上指令的可读视图，不能证明文本与未知原始源码一致。
 - 要验证重新生成的源码，应使用匹配版本的 Sui Move 编译器重新编译，并逐字节比较生成模块；仅“能够编译”不代表语义一致。

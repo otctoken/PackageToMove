@@ -25,7 +25,13 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { AnalyzeResult, Network, PackageResult } from "@/lib/types";
+import type {
+  AnalyzeResult,
+  DecompileMetadata,
+  Network,
+  PackageResult,
+  RustDecompileResponse,
+} from "@/lib/types";
 import { decompileMoveBytecode } from "@/lib/wasm-decompiler";
 
 const EXAMPLES = [
@@ -185,6 +191,9 @@ export default function Home() {
   const [filter, setFilter] = useState("");
   const [copied, setCopied] = useState(false);
   const [fullSources, setFullSources] = useState<Record<string, string>>({});
+  const [decompileMetadata, setDecompileMetadata] = useState<
+    Record<string, DecompileMetadata>
+  >({});
   const [decompilingKey, setDecompilingKey] = useState("");
   const [decompileError, setDecompileError] = useState("");
   const [decompileRetry, setDecompileRetry] = useState(0);
@@ -203,6 +212,7 @@ export default function Home() {
   const sourceKey =
     activePackage && module ? `${activePackage.id}::${module.name}` : "";
   const fullSource = sourceKey ? fullSources[sourceKey] : undefined;
+  const sourceMetadata = sourceKey ? decompileMetadata[sourceKey] : undefined;
   const visibleCode =
     activeTab === "source"
       ? fullSource ?? module?.source ?? ""
@@ -218,30 +228,92 @@ export default function Home() {
   useEffect(() => {
     if (!result || !activePackage || !module || !sourceKey || fullSource) return;
     const controller = new AbortController();
+    const requestBody = JSON.stringify({
+      packageId: activePackage.id,
+      module: module.name,
+      network: result.network,
+    });
     setDecompilingKey(sourceKey);
     setDecompileError("");
-    void fetch("/api/decompile", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        packageId: activePackage.id,
-        module: module.name,
-        network: result.network,
-      }),
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error ?? "读取字节码失败");
-        const source = await decompileMoveBytecode(
-          payload.bytecode as string,
-          module.disassembly,
-        );
+
+    void (async () => {
+      let rustFailure = "";
+      try {
+        const response = await fetch("/api/decompile", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: requestBody,
+          signal: controller.signal,
+        });
+        const payload = (await response.json()) as
+          | RustDecompileResponse
+          | { error?: string };
+        if (!response.ok || !("source" in payload)) {
+          throw new Error(
+            "error" in payload && payload.error
+              ? payload.error
+              : "Rust 反编译服务不可用",
+          );
+        }
+        if (
+          payload.verification.canonicalInput !== "sui-chain-bytecode" ||
+          !payload.verification.bytecodeVerified
+        ) {
+          throw new Error("Rust 服务未确认链上字节码校验");
+        }
         setFullSources((current) => ({
           ...current,
-          [sourceKey]: source,
+          [sourceKey]: payload.source,
         }));
-      })
+        setDecompileMetadata((current) => ({
+          ...current,
+          [sourceKey]: {
+            engine: payload.engine,
+            fallback: false,
+            verification: payload.verification,
+          },
+        }));
+        return;
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
+        rustFailure =
+          cause instanceof Error ? cause.message : "Rust 反编译服务不可用";
+      }
+
+      const fallbackResponse = await fetch("/api/bytecode", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: requestBody,
+        signal: controller.signal,
+      });
+      const fallbackPayload = (await fallbackResponse.json()) as {
+        bytecode?: string;
+        error?: string;
+      };
+      if (!fallbackResponse.ok || !fallbackPayload.bytecode) {
+        throw new Error(
+          `${rustFailure}；WASM 回退失败：${
+            fallbackPayload.error ?? "无法读取链上字节码"
+          }`,
+        );
+      }
+      const source = await decompileMoveBytecode(
+        fallbackPayload.bytecode,
+        module.disassembly,
+      );
+      setFullSources((current) => ({
+        ...current,
+        [sourceKey]: source,
+      }));
+      setDecompileMetadata((current) => ({
+        ...current,
+        [sourceKey]: {
+          engine: "zig-wasm",
+          fallback: true,
+          warning: `Rust 主引擎失败：${rustFailure}`,
+        },
+      }));
+    })()
       .catch((cause) => {
         if (cause instanceof DOMException && cause.name === "AbortError") return;
         setDecompileError(
@@ -275,6 +347,7 @@ export default function Home() {
       const data = payload as AnalyzeResult;
       setResult(data);
       setFullSources({});
+      setDecompileMetadata({});
       setDecompileError("");
       setDecompileRetry(0);
       setActivePackageId(data.rootPackage);
@@ -492,7 +565,14 @@ export default function Home() {
                 <div className="file-title">
                   <span className="file-icon"><Braces size={15} /></span>
                   <span><strong>{module?.name ?? "module"}</strong>.move</span>
-                  <i className="verified"><ShieldCheck size={13} /> ON-CHAIN</i>
+                  <i className="verified">
+                    <ShieldCheck size={13} />
+                    {sourceMetadata?.fallback
+                      ? "WASM FALLBACK"
+                      : sourceMetadata?.verification?.bytecodeVerified
+                        ? "RUST VERIFIED"
+                        : "ON-CHAIN"}
+                  </i>
                 </div>
                 <div className="code-actions">
                   <button onClick={copyCode}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button>
@@ -513,7 +593,11 @@ export default function Home() {
                   <GitBranch size={14} /> Bytecode IR
                 </button>
                 <span>
-                  {fullSource ? "FULL FUNCTION BODIES" : "ABI PREVIEW"}
+                  {sourceMetadata?.fallback
+                    ? "ZIG/WASM FALLBACK"
+                    : fullSource
+                      ? "BYTECODE-DERIVED VIEW"
+                      : "ABI PREVIEW"}
                 </span>
               </div>
               {activeTab === "source" && decompilingKey === sourceKey && (
@@ -536,10 +620,32 @@ export default function Home() {
                   </button>
                 </div>
               )}
+              {activeTab === "source" && sourceMetadata?.fallback && (
+                <div className="decompile-error">
+                  <CircleAlert size={14} />
+                  <span>
+                    当前为 Zig/WASM 故障回退结果。{sourceMetadata.warning}
+                    ；请用 Bytecode IR 作为唯一真相。
+                  </span>
+                </div>
+              )}
               <SourceView code={visibleCode} />
               <div className="code-status">
-                <span><i /> {fullSource ? "Full decompile" : "Sui Move"}</span>
-                <span>UTF-8</span>
+                <span>
+                  <i />{" "}
+                  {sourceMetadata?.fallback
+                    ? "Zig/WASM fallback"
+                    : sourceMetadata?.verification?.bytecodeVerified
+                      ? "Rust · chain bytecode verified"
+                      : fullSource
+                        ? "Full decompile"
+                        : "Sui Move"}
+                </span>
+                <span>
+                  {sourceMetadata?.verification
+                    ? `${sourceMetadata.verification.instructionCount} instructions · ${sourceMetadata.verification.abortCount} aborts`
+                    : "UTF-8"}
+                </span>
                 <span className="status-right"><NetworkIcon size={13} /> {result.network}</span>
               </div>
             </section>

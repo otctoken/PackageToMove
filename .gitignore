@@ -7,5 +7,6 @@ out
 .env*
 !.env.example
 .research
+target
 vendor/move-decompiler-zig/.zig-cache
 vendor/move-decompiler-zig/zig-out

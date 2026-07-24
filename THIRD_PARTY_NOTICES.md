@@ -17,3 +17,16 @@ without limitation the rights to use, copy, modify, merge, publish, distribute,
 sublicense, and/or sell copies of the Software, and to permit persons to whom
 the Software is furnished to do so, subject to the conditions in the upstream
 license.
+
+## MystenLabs Sui Move decompiler
+
+The Rust Move bytecode parser, verifier, model, stackless-bytecode pipeline and
+decompiler under `vendor/move-rust` are vendored from
+[MystenLabs/sui](https://github.com/MystenLabs/sui) at commit
+`26c78168d2be95e0686b8a604b3ad0ec763829c2`.
+
+Copyright (c) The Move Contributors and their respective copyright holders.
+
+Licensed under the Apache License, Version 2.0. The complete license text and
+vendor-specific provenance are in `vendor/move-rust/LICENSE` and
+`vendor/move-rust/UPSTREAM.md`.
