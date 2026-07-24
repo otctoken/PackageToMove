@@ -38,6 +38,7 @@ npm run dev
 
 - GraphQL：读取 Package 模块及链上反汇编。
 - JSON-RPC：读取标准化 Move ABI。
-- Revela：将单个模块的原始 `.mv` 字节码按需恢复为包含完整函数体的伪 Move 源码。
+- 内置 WASM 反编译器：直接在浏览器中从原始 `.mv` 字节码构建 CFG，并恢复包含完整函数体的伪 Move 源码。
+- 完整反编译不需要 API Key，也不依赖第三方在线反编译服务。
 - API 路由在服务端请求 Sui 节点，避免浏览器跨域限制。
 - 单次分析最多递归 120 个 Package，防止异常依赖图耗尽 Serverless 执行时间。

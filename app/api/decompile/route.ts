@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { decompileMoveModule } from "@/lib/revela";
+import { getMoveModuleBytecode } from "@/lib/bytecode";
 import { Network } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
-    const result = await decompileMoveModule(
+    const result = await getMoveModuleBytecode(
       body.packageId,
       body.module,
       network,
@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     const message =
-      error instanceof Error ? error.message : "完整反编译失败，请稍后重试";
+      error instanceof Error ? error.message : "读取模块字节码失败，请稍后重试";
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }

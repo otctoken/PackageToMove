@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { AnalyzeResult, Network, PackageResult } from "@/lib/types";
+import { decompileMoveBytecode } from "@/lib/wasm-decompiler";
 
 const EXAMPLES = [
   { label: "Sui Framework", value: "0x2" },
@@ -231,10 +232,14 @@ export default function Home() {
     })
       .then(async (response) => {
         const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error ?? "完整反编译失败");
+        if (!response.ok) throw new Error(payload.error ?? "读取字节码失败");
+        const source = await decompileMoveBytecode(
+          payload.bytecode as string,
+          module.disassembly,
+        );
         setFullSources((current) => ({
           ...current,
-          [sourceKey]: payload.source as string,
+          [sourceKey]: source,
         }));
       })
       .catch((cause) => {

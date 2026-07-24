@@ -7,10 +7,6 @@ const RPC_ENDPOINTS: Record<Network, string> = {
   devnet: process.env.SUI_DEVNET_RPC ?? "https://fullnode.devnet.sui.io:443",
 };
 
-const REVELA_API =
-  process.env.REVELA_API_URL ??
-  "https://revela-v2.verichains.io/api/revela/decompile";
-
 async function postJson<T>(url: string, body: unknown, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -23,12 +19,7 @@ async function postJson<T>(url: string, body: unknown, timeoutMs: number): Promi
       cache: "no-store",
     });
     const text = await response.text();
-    if (!response.ok) {
-      if (response.status === 429) {
-        throw new Error("完整反编译服务请求过多，请稍后重试");
-      }
-      throw new Error(`完整反编译服务返回 HTTP ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Sui 节点返回 HTTP ${response.status}`);
     return JSON.parse(text) as T;
   } finally {
     clearTimeout(timeout);
@@ -68,7 +59,7 @@ async function fetchModuleBytecode(
   return Buffer.from(encoded, "base64").toString("hex");
 }
 
-export async function decompileMoveModule(
+export async function getMoveModuleBytecode(
   inputPackageId: string,
   moduleName: string,
   network: Network,
@@ -78,28 +69,9 @@ export async function decompileMoveModule(
     throw new Error("无效的 Move 模块名");
   }
   const bytecode = await fetchModuleBytecode(packageId, moduleName, network);
-  const response = await postJson<{
-    decompiled?: string;
-    module?: string;
-    error?: string;
-  }>(
-    REVELA_API,
-    {
-      chain: "sui",
-      bytecode,
-      address: packageId,
-      module: moduleName,
-      ignoreMismatch: true,
-    },
-    55_000,
-  );
-  if (!response.decompiled) {
-    throw new Error(response.error ?? "反编译器没有返回源码");
-  }
   return {
     packageId,
-    module: response.module ?? moduleName,
-    source: response.decompiled,
-    functionCount: (response.decompiled.match(/\bfun\s+[A-Za-z_]\w*/g) ?? []).length,
+    module: moduleName,
+    bytecode: Buffer.from(bytecode, "hex").toString("base64"),
   };
 }
