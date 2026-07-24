@@ -21,6 +21,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 vercel_runtime = "2"
 
+[dev-dependencies]
+base64 = "0.22"
+
 [[bin]]
 name = "decompile"
 path = "api/decompile.rs"

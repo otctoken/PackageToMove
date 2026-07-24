@@ -104,9 +104,11 @@ pub fn decompile_verified_bytecode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
     const RANGE_MODULE: &[u8] =
         include_bytes!("../vendor/move-decompiler-zig/src/test_data/range.mv");
+    const TREASURY_MODULE: &str = "oRzrCwYAAAAKAQAOAg4oAzZNBIMBDgWRAZMBB6QClAIIuARgBpgFXgr2BQUM+wVeABsBCAETAgoCGgIcAh0ABAIAAQMHAAICBwEAAAMADAEAAQMBDAEAAQMFDAEAAQUGAgAGBwcAABAAAQAADgIDAAAPBAEAAAwFAQAAFAEGAAEZCAkAAhgLDAEAAwkUFQEAAwsODwECAxEREgEABBULAQEMBBYLAQEMBBcTAQEMBhIJCgAGCggNCxAKBwkNDAMHDQIIAAcIBgADBwsFAQgAAwcIBgELAwEIAAQHCwUBCAADBQcIBgIHCwUBCAALAwEIAAECAQsEAQgAAQoCAQgBAQgHAQkAAQsCAQkAAQgABwkAAgoCCgIKAgsCAQgHBwgGAgsFAQkACwQBCQABCwUBCAADBwsFAQkAAwcIBgELAwEJAAIJAAUCBwsFAQkACwMBCQABAwRDb2luDENvaW5NZXRhZGF0YQZPcHRpb24GU3RyaW5nCFRSRUFTVVJZC1RyZWFzdXJ5Q2FwCVR4Q29udGV4dANVcmwFYXNjaWkEYnVybgRjb2luD2NyZWF0ZV9jdXJyZW5jeQdkZXN0cm95C2R1bW15X2ZpZWxkBWdyYW50CGdyYW50X3RvBGluaXQEbWludApuZXdfdW5zYWZlBm9wdGlvbgtwcm90b2NvbF9pZBRwdWJsaWNfZnJlZXplX29iamVjdBNwdWJsaWNfc2hhcmVfb2JqZWN0D3B1YmxpY190cmFuc2ZlcgRzb21lBnN0cmluZwh0cmFuc2Zlcgh0cmVhc3VyeQp0eF9jb250ZXh0A3VybNdNqyRrDb01CZJI/dH6u8RMFdbuks2pvcJDNiO1GbNuAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgMIZAAAAAAAAAAKAgUEV1dBTAoCDAtXcmFwcGVkIFdBTAoCAQAKAjY1aHR0cHM6Ly9pbWd1cmx6eC5jb20vdG9rZW4taW1hZ2UvdG9rZW4tdFJVR2stcE5BXy5zdmcAAgENAQAAAAAHEAsAMQkHAQcCBwMHBBEFEQ04AAsBOAEMAjgCCwI4AwIBAQAAAQULAAsBCwI4BAICAQQAAQcLAAsBCwM4BAsCOAUCAwEEAAEFCwALATgGAQIEAQAAAQIxAQIA";
 
     #[test]
     fn range_fixture_is_verified_and_decompiled_from_exact_bytecode() {
@@ -132,5 +134,25 @@ mod tests {
         assert!(source.contains("*(&mut l14.min_stake) = l1"));
         assert!(source.contains("event::emit(RangeParametersSetEvent"));
         assert!(source.contains("is_new: !(l12)"));
+    }
+
+    #[test]
+    fn discarded_burn_result_keeps_the_effectful_call() {
+        let bytecode = BASE64
+            .decode(TREASURY_MODULE)
+            .expect("on-chain treasury module fixture must be valid base64");
+        let (source, verification) =
+            decompile_verified_bytecode(&bytecode).expect("treasury fixture must decompile");
+
+        assert!(verification.bytecode_verified);
+        assert_eq!(verification.function_count, 5);
+        assert!(
+            source.contains("coin::burn(l0, l1)"),
+            "destroy must retain its effectful burn call:\n{source}"
+        );
+        assert!(
+            !source.contains("public entry fun destroy(l0: &mut TreasuryCap<TREASURY>, l1: Coin<TREASURY>) {}"),
+            "destroy must not be rendered with an empty body:\n{source}"
+        );
     }
 }

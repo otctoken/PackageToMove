@@ -186,7 +186,12 @@ pub fn exp(
                 ));
             }
             SI::VariantSwitch { condition, .. } => seq.push(trivial(&mut map, condition)),
-            SI::Nop | SI::Drop(_) | SI::NotImplemented(_) => continue,
+            // `Pop` discards only the value produced by the preceding expression. The
+            // expression itself can still have effects (for example `coin::burn` returns
+            // the burned amount, which callers commonly discard). Dropping the entire
+            // register here silently erased those calls from the reconstructed source.
+            SI::Drop(reg) => seq.push(trivial(&mut map, Trivial::Register(reg))),
+            SI::Nop | SI::NotImplemented(_) => continue,
         }
     }
 
