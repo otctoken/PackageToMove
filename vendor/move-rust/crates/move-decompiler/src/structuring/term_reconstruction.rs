@@ -38,12 +38,22 @@ pub fn exp(
                 rhs:
                     RValue::Call {
                         target,
-                        type_arguments: _,
+                        type_arguments,
                         args,
                     },
             } => {
                 let args = trivials(&mut map, args);
-                let call = Out::Exp::Call((Out::ModuleRef::Qualified(target.0), target.1), args);
+                let call = Out::Exp::Call(
+                    Out::CallTarget {
+                        module: Out::ModuleRef::Qualified(target.0),
+                        function: target.1,
+                        type_arguments: type_arguments
+                            .iter()
+                            .map(|ty| Out::Type::from_normalized(ty))
+                            .collect(),
+                    },
+                    args,
+                );
                 match &lhs[..] {
                     [] => {
                         seq.push(call);

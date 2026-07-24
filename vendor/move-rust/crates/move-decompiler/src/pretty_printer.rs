@@ -685,11 +685,20 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
                 };
                 D::text("let").concat_space(lhs_doc)
             }
-            Exp::Call((m, f), args) => {
-                let head = if m.is_builtin() {
-                    D::text(format!("{f}"))
+            Exp::Call(target, args) => {
+                let head = if target.module.is_builtin() {
+                    D::text(format!("{}", target.function))
                 } else {
-                    D::text(format!("{m}::{f}"))
+                    D::text(format!("{}::{}", target.module, target.function))
+                };
+                let head = if target.type_arguments.is_empty() {
+                    head
+                } else {
+                    head.concat(D::angles(D::intersperse(
+                        target.type_arguments.iter().map(type_doc),
+                        D::text(",").concat(D::space()),
+                    )))
+                    .group()
                 };
                 head.concat(exp_list(context, args).parens())
             }

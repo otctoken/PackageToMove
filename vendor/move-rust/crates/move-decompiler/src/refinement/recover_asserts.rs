@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    ast::{Exp, ModuleRef},
+    ast::{CallTarget, Exp, ModuleRef},
     refinement::{Refine, utils::negate},
 };
 use move_symbol_pool::Symbol;
@@ -60,7 +60,11 @@ impl Refine for RecoverAsserts {
 
 fn assert_call(cond: Exp, code: Exp) -> Exp {
     Exp::Call(
-        (ModuleRef::Builtin, Symbol::from("assert!")),
+        CallTarget {
+            module: ModuleRef::Builtin,
+            function: Symbol::from("assert!"),
+            type_arguments: vec![],
+        },
         vec![cond, code],
     )
 }

@@ -134,6 +134,14 @@ mod tests {
         assert!(source.contains("*(&mut l14.min_stake) = l1"));
         assert!(source.contains("event::emit(RangeParametersSetEvent"));
         assert!(source.contains("is_new: !(l12)"));
+        assert!(source.contains("type_name::with_defining_ids<T0>()"));
+        assert!(source.contains("core::assert_is_manager<Range>"));
+        assert!(
+            source.contains(
+                "dynamic_object_field::exists_with_type<TypeName, Parameters<T0>>"
+            )
+        );
+        assert!(source.contains("event::emit<RangeParametersSetEvent<T0>>"));
     }
 
     #[test]
@@ -147,7 +155,7 @@ mod tests {
         assert!(verification.bytecode_verified);
         assert_eq!(verification.function_count, 5);
         assert!(
-            source.contains("coin::burn(l0, l1)"),
+            source.contains("coin::burn<TREASURY>(l0, l1)"),
             "destroy must retain its effectful burn call:\n{source}"
         );
         assert!(

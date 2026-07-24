@@ -176,7 +176,7 @@ fn walk_type(t: &Type, visit: &mut dyn FnMut(&TypeRef)) {
 /// their bare names; emitting a `use` declaration for them would be redundant (and, when the
 /// name collides with the local declaration, generate a confusing alias).
 fn rewrite_self_types(exp: &mut Exp, current_mid: ModuleId<Symbol>) {
-    let unself = |t: &mut TypeRef| {
+    let mut unself = |t: &mut TypeRef| {
         if let TypeRef::Qualified(ModuleRef::Qualified(mid), name) = t
             && *mid == current_mid
         {
@@ -212,7 +212,10 @@ fn rewrite_self_types(exp: &mut Exp, current_mid: ModuleId<Symbol>) {
             unself(t);
             rewrite_self_types(e, current_mid);
         }
-        Exp::Call(_, args) => {
+        Exp::Call(target, args) => {
+            for ty in &mut target.type_arguments {
+                walk_type_mut(ty, &mut unself);
+            }
             for a in args {
                 rewrite_self_types(a, current_mid);
             }
@@ -425,7 +428,10 @@ fn count_type_refs_exp(exp: &Exp, out: &mut BTreeMap<(ModuleId<Symbol>, Symbol),
             note(t, out);
             count_type_refs_exp(e, out);
         }
-        Exp::Call(_, args) => {
+        Exp::Call(target, args) => {
+            for ty in &target.type_arguments {
+                walk_type(ty, &mut |t| note(t, out));
+            }
             for a in args {
                 count_type_refs_exp(a, out);
             }
@@ -510,8 +516,11 @@ fn count_module_refs_exp(
         }
     };
     match exp {
-        Exp::Call((m, _), args) => {
-            note_module(m, out);
+        Exp::Call(target, args) => {
+            note_module(&target.module, out);
+            for ty in &target.type_arguments {
+                walk_type(ty, &mut |t| note_type_module(t, out));
+            }
             for a in args {
                 count_module_refs_exp(a, type_uses, out);
             }
@@ -595,8 +604,11 @@ fn rewrite(
     type_uses: &BTreeMap<(ModuleId<Symbol>, Symbol), Symbol>,
 ) {
     match exp {
-        Exp::Call((m, _), args) => {
-            alias_module(m, uses);
+        Exp::Call(target, args) => {
+            alias_module(&mut target.module, uses);
+            for ty in &mut target.type_arguments {
+                walk_type_mut(ty, &mut |t| alias_type(t, uses, type_uses));
+            }
             for a in args {
                 rewrite(a, uses, type_uses);
             }

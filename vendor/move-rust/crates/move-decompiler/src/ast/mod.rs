@@ -122,6 +122,14 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone)]
+pub struct CallTarget {
+    pub module: ModuleRef,
+    pub function: Symbol,
+    /// The exact generic instantiation recorded by `CallGeneric` bytecode.
+    pub type_arguments: Vec<Type>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Datatype {
     pub type_ref: TypeRef,
     pub type_arguments: Vec<Type>,
@@ -259,7 +267,7 @@ pub enum Exp {
     /// `let X;` - declaration with no initializer. Inserted by `hoist_declarations` when an
     /// arm-scope `let X = e` has to be lifted out to a common enclosing scope.
     Declare(Vec<String>),
-    Call((ModuleRef, Symbol), Vec<Exp>),
+    Call(CallTarget, Vec<Exp>),
     Abort(Box<Exp>),
     // Do we need drop?
     Primitive {
@@ -661,13 +669,24 @@ impl std::fmt::Display for Exp {
                     indent(f, level)?;
                     writeln!(f, "let {};", items.join(", "))
                 }
-                Exp::Call((module_name, fun_name), exps) => {
+                Exp::Call(target, exps) => {
                     indent(f, level)?;
-                    if module_name.is_builtin() {
-                        write!(f, "{fun_name}(")?;
+                    if target.module.is_builtin() {
+                        write!(f, "{}", target.function)?;
                     } else {
-                        write!(f, "{module_name}::{fun_name}(")?;
+                        write!(f, "{}::{}", target.module, target.function)?;
                     }
+                    if !target.type_arguments.is_empty() {
+                        write!(f, "<")?;
+                        for (i, ty) in target.type_arguments.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{ty:?}")?;
+                        }
+                        write!(f, ">")?;
+                    }
+                    write!(f, "(")?;
                     for (i, exp) in exps.iter().enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
