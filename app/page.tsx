@@ -183,6 +183,10 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"source" | "bytecode">("source");
   const [filter, setFilter] = useState("");
   const [copied, setCopied] = useState(false);
+  const [fullSources, setFullSources] = useState<Record<string, string>>({});
+  const [decompilingKey, setDecompilingKey] = useState("");
+  const [decompileError, setDecompileError] = useState("");
+  const [decompileRetry, setDecompileRetry] = useState(0);
 
   const activePackage = result?.packages.find((pkg) => pkg.id === activePackageId);
   const filteredModules = useMemo(
@@ -195,9 +199,12 @@ export default function Home() {
   const module =
     activePackage?.modules.find((item) => item.name === activeModule) ??
     filteredModules[0];
+  const sourceKey =
+    activePackage && module ? `${activePackage.id}::${module.name}` : "";
+  const fullSource = sourceKey ? fullSources[sourceKey] : undefined;
   const visibleCode =
     activeTab === "source"
-      ? module?.source ?? ""
+      ? fullSource ?? module?.source ?? ""
       : module?.disassembly ?? "// 此模块的原始反汇编暂不可用。";
 
   useEffect(() => {
@@ -206,6 +213,41 @@ export default function Home() {
       setActiveModule(activePackage.modules[0]?.name ?? "");
     }
   }, [activePackage, activeModule]);
+
+  useEffect(() => {
+    if (!result || !activePackage || !module || !sourceKey || fullSource) return;
+    const controller = new AbortController();
+    setDecompilingKey(sourceKey);
+    setDecompileError("");
+    void fetch("/api/decompile", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        packageId: activePackage.id,
+        module: module.name,
+        network: result.network,
+      }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error ?? "完整反编译失败");
+        setFullSources((current) => ({
+          ...current,
+          [sourceKey]: payload.source as string,
+        }));
+      })
+      .catch((cause) => {
+        if (cause instanceof DOMException && cause.name === "AbortError") return;
+        setDecompileError(
+          cause instanceof Error ? cause.message : "完整反编译失败",
+        );
+      })
+      .finally(() => {
+        setDecompilingKey((current) => (current === sourceKey ? "" : current));
+      });
+    return () => controller.abort();
+  }, [activePackage, decompileRetry, fullSource, module, result, sourceKey]);
 
   async function analyze(event?: FormEvent, override?: string) {
     event?.preventDefault();
@@ -227,6 +269,9 @@ export default function Home() {
       if (!response.ok) throw new Error(payload.error ?? "分析失败");
       const data = payload as AnalyzeResult;
       setResult(data);
+      setFullSources({});
+      setDecompileError("");
+      setDecompileRetry(0);
       setActivePackageId(data.rootPackage);
       const root = data.packages.find((pkg) => pkg.id === data.rootPackage);
       setActiveModule(root?.modules[0]?.name ?? "");
@@ -454,7 +499,7 @@ export default function Home() {
                   className={activeTab === "source" ? "active" : ""}
                   onClick={() => setActiveTab("source")}
                 >
-                  <Code2 size={14} /> Reconstructed Move
+                  <Code2 size={14} /> Decompiled Move
                 </button>
                 <button
                   className={activeTab === "bytecode" ? "active" : ""}
@@ -462,11 +507,33 @@ export default function Home() {
                 >
                   <GitBranch size={14} /> Bytecode IR
                 </button>
-                <span>BEST-EFFORT DECOMPILATION</span>
+                <span>
+                  {fullSource ? "FULL FUNCTION BODIES" : "ABI PREVIEW"}
+                </span>
               </div>
+              {activeTab === "source" && decompilingKey === sourceKey && (
+                <div className="decompile-progress">
+                  <LoaderCircle className="spin" size={14} />
+                  正在还原 private/internal 函数与完整控制流…
+                </div>
+              )}
+              {activeTab === "source" && decompileError && !fullSource && (
+                <div className="decompile-error">
+                  <CircleAlert size={14} />
+                  <span>{decompileError}，当前显示 ABI 预览。</span>
+                  <button
+                    onClick={() => {
+                      setDecompileError("");
+                      setDecompileRetry((current) => current + 1);
+                    }}
+                  >
+                    重试
+                  </button>
+                </div>
+              )}
               <SourceView code={visibleCode} />
               <div className="code-status">
-                <span><i /> Sui Move</span>
+                <span><i /> {fullSource ? "Full decompile" : "Sui Move"}</span>
                 <span>UTF-8</span>
                 <span className="status-right"><NetworkIcon size={13} /> {result.network}</span>
               </div>

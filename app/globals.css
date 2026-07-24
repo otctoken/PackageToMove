@@ -245,6 +245,17 @@ main { min-height: 100vh; overflow: hidden; background: linear-gradient(180deg, 
 .code-tabs button { height: 100%; padding: 0 10px; display: flex; align-items: center; gap: 6px; border: 0; border-bottom: 1px solid transparent; background: none; color: #657c73; font-size: 9px; cursor: pointer; }
 .code-tabs button.active { color: var(--green); border-bottom-color: var(--green); }
 .code-tabs > span { margin-left: auto; color: #40564d; font-family: "DM Mono"; font-size: 7px; letter-spacing: .7px; }
+.decompile-progress, .decompile-error {
+  min-height: 34px; padding: 8px 12px; display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid var(--line); font-size: 9px; font-family: "DM Mono";
+}
+.decompile-progress { color: var(--green); background: rgba(98, 239, 174, .035); }
+.decompile-error { color: #d8b486; background: rgba(255, 201, 120, .035); }
+.decompile-error span { flex: 1; }
+.decompile-error button {
+  border: 1px solid rgba(255, 201, 120, .2); background: transparent; color: var(--amber);
+  border-radius: 4px; padding: 3px 7px; font-size: 8px; cursor: pointer;
+}
 .code-scroll { min-height: 0; flex: 1; overflow: auto; background: radial-gradient(circle at 80% 15%, rgba(48, 129, 96, .035), transparent 35%); }
 .source-code { min-width: max-content; margin: 0; padding: 18px 0 45px; color: #aec4bb; font-size: 11px; line-height: 1.85; tab-size: 4; }
 .code-line { display: block; min-height: 20px; padding-right: 25px; }

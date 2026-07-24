@@ -118,10 +118,15 @@ export function decompileModule(
   normalized: NormalizedModule | null,
   disassembly: string | null,
 ) {
+  const bytecodeFunctionCount = (
+    disassembly?.match(
+      /^(?:(?:public(?:\(friend\))?|entry|native)\s+)*[a-z_][A-Za-z0-9_]*(?:<[^{}]*>)?\([^)]*\)(?:\s*:[^{]+)?\s*\{/gm,
+    ) ?? []
+  ).length;
   if (!normalized) {
     return {
       source: readableBytecode(disassembly) || `module ${shortAddress(packageId)}::${moduleName} {\n    // Module ABI is unavailable.\n}`,
-      functionCount: (disassembly?.match(/\bfun\s+\w+/g) ?? []).length,
+      functionCount: bytecodeFunctionCount,
       structCount: (disassembly?.match(/\bstruct\s+\w+/g) ?? []).length,
     };
   }
@@ -183,7 +188,7 @@ export function decompileModule(
   lines.push("}");
   return {
     source: lines.join("\n"),
-    functionCount: functions.length,
+    functionCount: Math.max(functions.length, bytecodeFunctionCount),
     structCount: structs.length,
   };
 }
