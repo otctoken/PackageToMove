@@ -116,6 +116,23 @@ test "decompile divide_into_n contains while loop" {
     try testing.expect(std.mem.indexOf(u8, output, "vector::push_back") != null);
 }
 
+test "range module preserves writes and generic instantiations" {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const output = try decompile(alloc, @embedFile("test_data/range.mv"));
+
+    try testing.expect(std.mem.indexOf(u8, output, "v14.min_stake = arg1") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "*arg1 =") == null);
+    try testing.expect(std.mem.indexOf(u8, output, "with_defining_ids<T0>()") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "parameters_exist<T0>") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "Parameters<T0> {") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "RangeParametersSetEvent<T0> {") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "event::emit<RangeParametersSetEvent<T0>>") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "freeze(") == null);
+}
+
 test "comprehensive: decompiles all bytecode features" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -165,7 +182,7 @@ test "comprehensive: decompiles all bytecode features" {
     // Struct pack/unpack
     try testing.expect(std.mem.indexOf(u8, output, "Simple { value:") != null);
     try testing.expect(std.mem.indexOf(u8, output, "let Simple { value }") != null);
-    try testing.expect(std.mem.indexOf(u8, output, "Pair {") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "Pair<u64> {") != null);
 
     // Field access
     try testing.expect(std.mem.indexOf(u8, output, "arg0.value") != null);
@@ -196,6 +213,6 @@ test "comprehensive: decompiles all bytecode features" {
     // Side effects visible (security-critical)
     try testing.expect(std.mem.indexOf(u8, output, "side_effect()") != null);
 
-    // Freeze
-    try testing.expect(std.mem.indexOf(u8, output, "freeze(") != null);
+    // FreezeRef is represented as Move's implicit reference coercion.
+    try testing.expect(std.mem.indexOf(u8, output, "freeze(") == null);
 }

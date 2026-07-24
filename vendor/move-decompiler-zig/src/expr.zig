@@ -85,7 +85,7 @@ pub fn renderBlockWithAssigned(
             },
 
             // ── Function calls ───────────────────────────────────
-            .call => |idx| try renderCall(allocator, module, &stack, &statements, idx, false),
+            .call => |idx| try renderCall(allocator, module, &stack, &statements, idx, null),
             .call_generic => |idx| try renderCallGeneric(allocator, module, &stack, &statements, idx),
 
             // ── Pack / Unpack ────────────────────────────────────
@@ -107,13 +107,25 @@ pub fn renderBlockWithAssigned(
                 }
             },
             .write_ref => {
-                const val = pop(&stack);
                 const r = pop(&stack);
-                try statements.append(allocator, try fmt(allocator, "*{s} = {s}", .{ r, val }));
+                const val = pop(&stack);
+                const target = if (std.mem.startsWith(u8, r, "&mut "))
+                    r[5..]
+                else if (r.len > 0 and r[0] == '&')
+                    r[1..]
+                else
+                    try fmt(allocator, "*{s}", .{r});
+                try statements.append(allocator, try fmt(allocator, "{s} = {s}", .{ target, val }));
             },
             .freeze_ref => {
                 const r = pop(&stack);
-                try stack.append(allocator, try fmt(allocator, "freeze({s})", .{r}));
+                if (std.mem.startsWith(u8, r, "&mut ")) {
+                    try stack.append(allocator, try fmt(allocator, "&{s}", .{r[5..]}));
+                } else {
+                    // Move source inserts the mutable-to-immutable reference
+                    // coercion implicitly at the call site.
+                    try stack.append(allocator, r);
+                }
             },
 
             // ── Arithmetic / Logic ───────────────────────────────
@@ -149,12 +161,35 @@ pub fn renderBlockWithAssigned(
             .cast_u256 => { const v = pop(&stack); try stack.append(allocator, try fmt(allocator, "({s} as u256)", .{v})); },
 
             // ── Vector ops ───────────────────────────────────────
-            .vec_len => |_| { const v = pop(&stack); try stack.append(allocator, try fmt(allocator, "vector::length(&{s})", .{v})); },
-            .vec_imm_borrow => |_| { const idx_v = pop(&stack); const v = pop(&stack); try stack.append(allocator, try fmt(allocator, "&{s}[{s}]", .{ v, idx_v })); },
-            .vec_mut_borrow => |_| { const idx_v = pop(&stack); const v = pop(&stack); try stack.append(allocator, try fmt(allocator, "&mut {s}[{s}]", .{ v, idx_v })); },
-            .vec_push_back => |_| { const val = pop(&stack); const v = pop(&stack); try statements.append(allocator, try fmt(allocator, "vector::push_back(&mut {s}, {s})", .{ v, val })); },
-            .vec_pop_back => |_| { const v = pop(&stack); try stack.append(allocator, try fmt(allocator, "vector::pop_back(&mut {s})", .{v})); },
-            .vec_swap => |_| { const j = pop(&stack); const idx_v = pop(&stack); const v = pop(&stack); try statements.append(allocator, try fmt(allocator, "vector::swap(&mut {s}, {s}, {s})", .{ v, idx_v, j })); },
+            .vec_len => |_| {
+                const v = pop(&stack);
+                try stack.append(allocator, try fmt(allocator, "vector::length({s})", .{v}));
+            },
+            .vec_imm_borrow => |_| {
+                const idx_v = pop(&stack);
+                const v = pop(&stack);
+                try stack.append(allocator, try fmt(allocator, "&{s}[{s}]", .{ stripReference(v), idx_v }));
+            },
+            .vec_mut_borrow => |_| {
+                const idx_v = pop(&stack);
+                const v = pop(&stack);
+                try stack.append(allocator, try fmt(allocator, "&mut {s}[{s}]", .{ stripReference(v), idx_v }));
+            },
+            .vec_push_back => |_| {
+                const val = pop(&stack);
+                const v = pop(&stack);
+                try statements.append(allocator, try fmt(allocator, "vector::push_back({s}, {s})", .{ v, val }));
+            },
+            .vec_pop_back => |_| {
+                const v = pop(&stack);
+                try stack.append(allocator, try fmt(allocator, "vector::pop_back({s})", .{v}));
+            },
+            .vec_swap => |_| {
+                const j = pop(&stack);
+                const idx_v = pop(&stack);
+                const v = pop(&stack);
+                try statements.append(allocator, try fmt(allocator, "vector::swap({s}, {s}, {s})", .{ v, idx_v, j }));
+            },
             .vec_pack => |vp| {
                 var args_buf = std.ArrayList(u8){};
                 var n: u64 = vp.len;
@@ -229,6 +264,12 @@ fn pop(stack: *std.ArrayList([]const u8)) []const u8 {
     return stack.pop() orelse "???";
 }
 
+fn stripReference(value: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, value, "&mut ")) return value[5..];
+    if (value.len > 0 and value[0] == '&') return value[1..];
+    return value;
+}
+
 fn localName(allocator: Allocator, idx: u8, param_count: u16) ![]const u8 {
     if (idx < param_count)
         return fmt(allocator, "arg{}", .{idx})
@@ -281,7 +322,7 @@ fn renderCall(
     stack: *std.ArrayList([]const u8),
     statements: *std.ArrayList([]const u8),
     fh_idx: types.FunctionHandleIndex,
-    _: bool,
+    type_arguments: ?types.SignatureIndex,
 ) !void {
     const fh = module.function_handles[fh_idx];
     const fn_name = try resolveFuncName(allocator, module, fh_idx);
@@ -299,6 +340,9 @@ fn renderCall(
 
     var call_buf = std.ArrayList(u8){};
     try call_buf.appendSlice(allocator, fn_name);
+    if (type_arguments) |sig_idx| {
+        try appendTypeArguments(&call_buf, allocator, module, sig_idx);
+    }
     try call_buf.append(allocator, '(');
     for (args, 0..) |arg, idx| {
         if (idx > 0) try call_buf.appendSlice(allocator, ", ");
@@ -332,7 +376,85 @@ fn renderCallGeneric(
         return;
     }
     const fi = module.function_instantiations[fi_idx];
-    try renderCall(allocator, module, stack, statements, fi.handle, true);
+    try renderCall(allocator, module, stack, statements, fi.handle, fi.type_parameters);
+}
+
+fn appendTypeArguments(
+    out: *Writer,
+    allocator: Allocator,
+    module: *const types.CompiledModule,
+    sig_idx: types.SignatureIndex,
+) !void {
+    if (sig_idx >= module.signatures.len) return;
+    const signature = module.signatures[sig_idx];
+    try out.append(allocator, '<');
+    for (signature.tokens, 0..) |token, i| {
+        if (i > 0) try out.appendSlice(allocator, ", ");
+        try appendSignatureToken(out, allocator, module, token);
+    }
+    try out.append(allocator, '>');
+}
+
+fn appendSignatureToken(
+    out: *Writer,
+    allocator: Allocator,
+    module: *const types.CompiledModule,
+    token: *const types.SignatureToken,
+) !void {
+    switch (token.*) {
+        .bool => try out.appendSlice(allocator, "bool"),
+        .u8 => try out.appendSlice(allocator, "u8"),
+        .u16 => try out.appendSlice(allocator, "u16"),
+        .u32 => try out.appendSlice(allocator, "u32"),
+        .u64 => try out.appendSlice(allocator, "u64"),
+        .u128 => try out.appendSlice(allocator, "u128"),
+        .u256 => try out.appendSlice(allocator, "u256"),
+        .address => try out.appendSlice(allocator, "address"),
+        .signer => try out.appendSlice(allocator, "signer"),
+        .vector => |inner| {
+            try out.appendSlice(allocator, "vector<");
+            try appendSignatureToken(out, allocator, module, inner);
+            try out.append(allocator, '>');
+        },
+        .reference => |inner| {
+            try out.append(allocator, '&');
+            try appendSignatureToken(out, allocator, module, inner);
+        },
+        .mutable_reference => |inner| {
+            try out.appendSlice(allocator, "&mut ");
+            try appendSignatureToken(out, allocator, module, inner);
+        },
+        .datatype => |idx| try appendDatatypeName(out, allocator, module, idx),
+        .datatype_instantiation => |inst| {
+            try appendDatatypeName(out, allocator, module, inst.handle);
+            try out.append(allocator, '<');
+            for (inst.type_arguments, 0..) |argument, i| {
+                if (i > 0) try out.appendSlice(allocator, ", ");
+                try appendSignatureToken(out, allocator, module, argument);
+            }
+            try out.append(allocator, '>');
+        },
+        .type_parameter => |idx| try out.writer(allocator).print("T{}", .{idx}),
+    }
+}
+
+fn appendDatatypeName(
+    out: *Writer,
+    allocator: Allocator,
+    module: *const types.CompiledModule,
+    idx: types.DatatypeHandleIndex,
+) !void {
+    if (idx >= module.datatype_handles.len) {
+        try out.appendSlice(allocator, "?type");
+        return;
+    }
+    const datatype = module.datatype_handles[idx];
+    if (datatype.module != module.self_module_handle_idx) {
+        const module_handle = module.module_handles[datatype.module];
+        try out.appendSlice(allocator, module.identifiers[module_handle.name]);
+        try out.appendSlice(allocator, "::");
+    }
+    try out.appendSlice(allocator, module.identifiers[datatype.name]);
 }
 
 fn renderPack(
@@ -354,11 +476,18 @@ fn renderPack(
     const sd = module.struct_defs[actual_idx];
     const dh = module.datatype_handles[sd.struct_handle];
     const name = module.identifiers[dh.name];
+    const type_arguments = if (is_generic and sd_idx < module.struct_def_instantiations.len)
+        module.struct_def_instantiations[sd_idx].type_parameters
+    else
+        null;
 
     switch (sd.field_info) {
         .declared => |fields| {
             var buf = std.ArrayList(u8){};
             try buf.appendSlice(allocator, name);
+            if (type_arguments) |sig_idx| {
+                try appendTypeArguments(&buf, allocator, module, sig_idx);
+            }
             try buf.appendSlice(allocator, " { ");
             var fi: usize = fields.len;
             while (fi > 0) {
@@ -397,6 +526,10 @@ fn renderUnpack(
     const sd = module.struct_defs[actual_idx];
     const dh = module.datatype_handles[sd.struct_handle];
     const name = module.identifiers[dh.name];
+    const type_arguments = if (is_generic and sd_idx < module.struct_def_instantiations.len)
+        module.struct_def_instantiations[sd_idx].type_parameters
+    else
+        null;
     const val = pop(stack);
 
     switch (sd.field_info) {
@@ -404,6 +537,9 @@ fn renderUnpack(
             var buf = std.ArrayList(u8){};
             try buf.appendSlice(allocator, "let ");
             try buf.appendSlice(allocator, name);
+            if (type_arguments) |sig_idx| {
+                try appendTypeArguments(&buf, allocator, module, sig_idx);
+            }
             try buf.appendSlice(allocator, " { ");
             for (fields, 0..) |field, fi| {
                 if (fi > 0) try buf.appendSlice(allocator, ", ");

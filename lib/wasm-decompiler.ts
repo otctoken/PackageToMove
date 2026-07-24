@@ -141,7 +141,13 @@ function dedentBranch(body: string, indent: string) {
 }
 
 function singleAssignment(body: string) {
-  const compact = body.trim();
+  let compact = body.trim();
+  const alias = compact.match(
+    /^let\s+(v\d+)\s*=\s*([^\n;]+);\s*\n\s*(let\s+)?(v\d+)\s*=\s*\1;$/,
+  );
+  if (alias) {
+    compact = `${alias[3] ?? ""}${alias[4]} = ${alias[2]};`;
+  }
   const match = compact.match(/^(let\s+)?(v\d+)\s*=\s*([\s\S]*);$/);
   if (!match || match[3].includes("\n")) return null;
   return {
@@ -149,6 +155,20 @@ function singleAssignment(body: string) {
     variable: match[2],
     expression: match[3].trim(),
   };
+}
+
+function conditionalExpression(
+  condition: string,
+  thenExpression: string,
+  elseExpression: string,
+) {
+  if (thenExpression === "true") {
+    return `${stripOuterParens(condition)} || ${stripOuterParens(elseExpression)}`;
+  }
+  if (elseExpression === "false") {
+    return `${stripOuterParens(condition)} && ${stripOuterParens(thenExpression)}`;
+  }
+  return `if (${condition}) { ${thenExpression} } else { ${elseExpression} }`;
 }
 
 function simplifyStructuredControlFlow(source: string): string {
@@ -236,7 +256,11 @@ function simplifyStructuredControlFlow(source: string): string {
         elseAssignment &&
         thenAssignment.variable === elseAssignment.variable
       ) {
-        output += `let ${thenAssignment.variable} = if (${condition}) { ${thenAssignment.expression} } else { ${elseAssignment.expression} };`;
+        output += `let ${thenAssignment.variable} = ${conditionalExpression(
+          condition,
+          thenAssignment.expression,
+          elseAssignment.expression,
+        )};`;
       } else {
         output += `if (${source.slice(conditionStart, conditionEnd).trim()}) {${thenBody}} else {${elseBody}}`;
       }
@@ -264,6 +288,11 @@ function recoverAssertions(source: string) {
       /^([ \t]*)let (v\d+) = if \((.+)\) \{ true } else \{ (.+) };\n\1assert!\(\2, (\d+)\);$/gm,
       (_match, indent: string, _variable: string, left: string, right: string, code: string) =>
         `${indent}assert!(${stripOuterParens(left)} || ${stripOuterParens(right)}, ${code});`,
+    )
+    .replace(
+      /^([ \t]*)let (v\d+) = (.+);\n\1assert!\(\2, (\d+)\);$/gm,
+      (_match, indent: string, _variable: string, expression: string, code: string) =>
+        `${indent}assert!(${stripOuterParens(expression)}, ${code});`,
     );
 
   // When terminating abort arms were lifted out of nested branches, the Zig
@@ -276,11 +305,65 @@ function recoverAssertions(source: string) {
   return result;
 }
 
+function recoverFunctionTailExpressions(source: string) {
+  let cursor = 0;
+  let output = "";
+
+  while (cursor < source.length) {
+    const functionMatch = /\bfun\s+[A-Za-z_][A-Za-z0-9_]*(?:<[^>{}]*>)?\s*\(/g.exec(
+      source.slice(cursor),
+    );
+    if (!functionMatch) {
+      output += source.slice(cursor);
+      break;
+    }
+
+    const functionStart = cursor + functionMatch.index;
+    const bodyOpen = source.indexOf("{", functionStart);
+    if (bodyOpen < 0) {
+      output += source.slice(cursor);
+      break;
+    }
+    const bodyClose = findMatchingDelimiter(source, bodyOpen, "{", "}");
+    if (bodyClose < 0) {
+      output += source.slice(cursor);
+      break;
+    }
+
+    output += source.slice(cursor, bodyOpen + 1);
+    let body = source.slice(bodyOpen + 1, bodyClose);
+    const header = source.slice(functionStart, bodyOpen);
+    const hasReturnType = /\)\s*:\s*[\s\S]+$/.test(header);
+
+    if (hasReturnType) {
+      const tail = body.match(/(^|\n)([ \t]*)([^\n;]+);([ \t]*\n?[ \t]*)$/);
+      if (tail) {
+        const expression = tail[3].trim();
+        if (
+          !/^(?:return|abort|let|assert!|continue|break)\b/.test(expression) &&
+          !/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(expression)
+        ) {
+          body = `${body.slice(0, tail.index)}${tail[1]}${tail[2]}${tail[3]}${tail[4]}`;
+        }
+      }
+    }
+
+    output += body;
+    output += "}";
+    cursor = bodyClose + 1;
+  }
+
+  return output;
+}
+
 export function polishDecompiledSource(
   source: string,
   disassembly?: string | null,
 ) {
-  return expandModuleAddresses(recoverAssertions(source), disassembly)
+  return expandModuleAddresses(
+    recoverFunctionTailExpressions(recoverAssertions(source)),
+    disassembly,
+  )
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
