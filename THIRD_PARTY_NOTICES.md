@@ -4,6 +4,9 @@
 
 The bundled file `public/move_decompiler.wasm` is built from
 [unconfirmedlabs/move-decompiler-zig](https://github.com/unconfirmedlabs/move-decompiler-zig).
+The corresponding source, including local CFG fixes, is vendored in
+`vendor/move-decompiler-zig` from upstream commit
+`bb699931141086521e492d172b7c6d5591759498`.
 
 Copyright (c) the move-decompiler-zig contributors.
 

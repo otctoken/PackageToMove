@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx scripts/test-decompiler.ts"
   },
   "engines": {
     "node": ">=20.9.0"
@@ -21,6 +22,7 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.3",
     "@types/react-dom": "^19.0.2",
+    "tsx": "^4.20.6",
     "typescript": "^5.7.2"
   },
   "overrides": {

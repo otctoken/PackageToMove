@@ -1,0 +1,12 @@
+.{
+    .name = .move_decompiler,
+    .version = "0.1.0",
+    .fingerprint = 0xf3b49cb58b5ffcc8,
+    .minimum_zig_version = "0.14.0",
+    .paths = .{
+        "src",
+        "build.zig",
+        "build.zig.zon",
+    },
+    .dependencies = .{},
+}

@@ -88,12 +88,192 @@ function stripOuterParens(value: string) {
   return result;
 }
 
+function findMatchingDelimiter(
+  source: string,
+  start: number,
+  open: string,
+  close: string,
+) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === open) depth += 1;
+    if (character === close) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function abortOnly(body: string) {
+  const statements = body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^_\s*=\s*.+;$/.test(line));
+  if (statements.length !== 1) return null;
+  return statements[0].match(/^abort\s+(\d+);$/)?.[1] ?? null;
+}
+
+function dedentBranch(body: string, indent: string) {
+  const branchIndent = `${indent}    `;
+  return body
+    .replace(/^\s*\n/, "")
+    .replace(/\n\s*$/, "")
+    .split("\n")
+    .map((line) =>
+      line.startsWith(branchIndent) ? `${indent}${line.slice(branchIndent.length)}` : line,
+    )
+    .join("\n");
+}
+
+function singleAssignment(body: string) {
+  const compact = body.trim();
+  const match = compact.match(/^(let\s+)?(v\d+)\s*=\s*([\s\S]*);$/);
+  if (!match || match[3].includes("\n")) return null;
+  return {
+    declared: Boolean(match[1]),
+    variable: match[2],
+    expression: match[3].trim(),
+  };
+}
+
+function simplifyStructuredControlFlow(source: string): string {
+  let cursor = 0;
+  let output = "";
+
+  while (cursor < source.length) {
+    const match = /(^|\n)([ \t]*)if\s*\(/g.exec(source.slice(cursor));
+    if (!match) {
+      output += source.slice(cursor);
+      break;
+    }
+
+    const matchStart = cursor + match.index;
+    const lineBreakLength = match[1].length;
+    const indent = match[2];
+    const ifStart = matchStart + lineBreakLength + indent.length;
+    output += source.slice(cursor, ifStart);
+
+    const conditionStart = source.indexOf("(", ifStart) + 1;
+    const conditionEnd = findMatchingDelimiter(source, conditionStart - 1, "(", ")");
+    if (conditionStart === 0 || conditionEnd < 0) {
+      output += source.slice(ifStart, ifStart + 2);
+      cursor = ifStart + 2;
+      continue;
+    }
+
+    const thenOpen = source.indexOf("{", conditionEnd);
+    if (thenOpen < 0) {
+      output += source.slice(ifStart, conditionEnd + 1);
+      cursor = conditionEnd + 1;
+      continue;
+    }
+    const thenClose = findMatchingDelimiter(source, thenOpen, "{", "}");
+    if (thenClose < 0) {
+      output += source.slice(ifStart);
+      break;
+    }
+
+    let afterThen = thenClose + 1;
+    while (/\s/.test(source[afterThen] ?? "")) afterThen += 1;
+    if (!source.startsWith("else", afterThen)) {
+      const thenBody = simplifyStructuredControlFlow(
+        source.slice(thenOpen + 1, thenClose),
+      );
+      output += `${source.slice(ifStart, thenOpen + 1)}${thenBody}}`;
+      cursor = thenClose + 1;
+      continue;
+    }
+
+    const elseOpen = source.indexOf("{", afterThen + 4);
+    const elseClose =
+      elseOpen >= 0 ? findMatchingDelimiter(source, elseOpen, "{", "}") : -1;
+    if (elseOpen < 0 || elseClose < 0) {
+      output += source.slice(ifStart, thenClose + 1);
+      cursor = thenClose + 1;
+      continue;
+    }
+
+    const condition = stripOuterParens(
+      source.slice(conditionStart, conditionEnd),
+    );
+    const thenBody = simplifyStructuredControlFlow(
+      source.slice(thenOpen + 1, thenClose),
+    );
+    const elseBody = simplifyStructuredControlFlow(
+      source.slice(elseOpen + 1, elseClose),
+    );
+    const thenAbort = abortOnly(thenBody);
+    const elseAbort = abortOnly(elseBody);
+
+    if (elseAbort) {
+      const continuation = dedentBranch(thenBody, indent);
+      output += `assert!(${condition}, ${elseAbort});`;
+      if (continuation) output += `\n${continuation}`;
+    } else if (thenAbort) {
+      const continuation = dedentBranch(elseBody, indent);
+      output += `assert!(!(${condition}), ${thenAbort});`;
+      if (continuation) output += `\n${continuation}`;
+    } else {
+      const thenAssignment = singleAssignment(thenBody);
+      const elseAssignment = singleAssignment(elseBody);
+      if (
+        thenAssignment &&
+        elseAssignment &&
+        thenAssignment.variable === elseAssignment.variable
+      ) {
+        output += `let ${thenAssignment.variable} = if (${condition}) { ${thenAssignment.expression} } else { ${elseAssignment.expression} };`;
+      } else {
+        output += `if (${source.slice(conditionStart, conditionEnd).trim()}) {${thenBody}} else {${elseBody}}`;
+      }
+    }
+    cursor = elseClose + 1;
+  }
+
+  return output;
+}
+
 function recoverAssertions(source: string) {
-  return source.replace(
-    /^([ \t]*)if\s*\(([\s\S]*?)\)\s*\{\s*\}\s*else\s*\{\s*abort\s+(\d+);\s*\};?/gm,
-    (_match, indent: string, condition: string, code: string) =>
-      `${indent}assert!(${stripOuterParens(condition)}, ${code});`,
+  const simplified = simplifyStructuredControlFlow(source);
+  let result = simplified.replace(
+      /^([ \t]*)if\s*\(([\s\S]*?)\)\s*\{\s*\}\s*else\s*\{\s*abort\s+(\d+);\s*\};?/gm,
+      (_match, indent: string, condition: string, code: string) =>
+        `${indent}assert!(${stripOuterParens(condition)}, ${code});`,
+    )
+    .replace(/^([ \t]*)}\s*else\s*\{\s*}\s*$/gm, "$1}")
+    .replace(
+      /^([ \t]*)let (v\d+) = if \((.+)\) \{ (.+) } else \{ false };\n\1assert!\(\2, (\d+)\);$/gm,
+      (_match, indent: string, _variable: string, left: string, right: string, code: string) =>
+        `${indent}assert!(${stripOuterParens(left)} && ${stripOuterParens(right)}, ${code});`,
+    )
+    .replace(
+      /^([ \t]*)let (v\d+) = if \((.+)\) \{ true } else \{ (.+) };\n\1assert!\(\2, (\d+)\);$/gm,
+      (_match, indent: string, _variable: string, left: string, right: string, code: string) =>
+        `${indent}assert!(${stripOuterParens(left)} || ${stripOuterParens(right)}, ${code});`,
+    );
+
+  // When terminating abort arms were lifted out of nested branches, the Zig
+  // printer may have already emitted the return value as a semicolon-terminated
+  // statement. Make that return explicit and valid Move.
+  result = result.replace(
+    /^ {8}(v\d+);\n {4}}$/gm,
+    "        return $1;\n    }",
   );
+  return result;
 }
 
 export function polishDecompiledSource(

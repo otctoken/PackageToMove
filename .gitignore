@@ -3,5 +3,9 @@ node_modules
 .vercel
 out
 *.log
+*.tsbuildinfo
 .env*
 !.env.example
+.research
+vendor/move-decompiler-zig/.zig-cache
+vendor/move-decompiler-zig/zig-out
