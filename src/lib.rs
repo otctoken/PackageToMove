@@ -83,24 +83,63 @@ fn rendered_call_counts(source: &str) -> (usize, usize) {
     (call_count, generic_call_count)
 }
 
-fn count_source_lines(source: &str, prefix: &str) -> usize {
-    source
+fn rendered_function_sections(source: &str) -> (usize, String) {
+    let source = source
         .lines()
-        .filter(|line| line.trim_start().starts_with(prefix))
-        .count()
-}
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bytes = source.as_bytes();
+    let is_identifier_byte = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut function_count = 0;
+    let mut bodies = String::new();
+    let mut cursor = 0;
 
-fn rendered_function_count(source: &str) -> usize {
-    source
-        .lines()
-        .filter(|line| {
-            let line = line.trim_start();
-            line.starts_with("fun ")
-                || line.starts_with("public fun ")
-                || line.starts_with("entry fun ")
-                || line.starts_with("public entry fun ")
-        })
-        .count()
+    while cursor + 3 <= bytes.len() {
+        let Some(relative) = source[cursor..].find("fun") else {
+            break;
+        };
+        let start = cursor + relative;
+        let before_is_identifier = start > 0 && is_identifier_byte(bytes[start - 1]);
+        let after_is_identifier = start + 3 < bytes.len() && is_identifier_byte(bytes[start + 3]);
+        if before_is_identifier || after_is_identifier {
+            cursor = start + 3;
+            continue;
+        }
+
+        function_count += 1;
+        let mut signature_end = start + 3;
+        while signature_end < bytes.len()
+            && bytes[signature_end] != b'{'
+            && bytes[signature_end] != b';'
+        {
+            signature_end += 1;
+        }
+        if signature_end == bytes.len() || bytes[signature_end] == b';' {
+            cursor = signature_end.saturating_add(1);
+            continue;
+        }
+
+        let body_start = signature_end + 1;
+        let mut depth = 1usize;
+        let mut body_end = body_start;
+        while body_end < bytes.len() && depth > 0 {
+            match bytes[body_end] {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            body_end += 1;
+        }
+        if depth != 0 {
+            break;
+        }
+        bodies.push_str(&source[body_start..body_end - 1]);
+        bodies.push('\n');
+        cursor = body_end;
+    }
+
+    (function_count, bodies)
 }
 
 fn inspect_bytecode(
@@ -174,31 +213,33 @@ fn inspect_bytecode(
         }
     }
 
-    let (rendered_call_count, rendered_generic_call_count) = rendered_call_counts(source);
-    let rendered_abort_count = count_source_lines(source, "abort ");
-    let rendered_write_ref_count = source
+    let (rendered_function_count, rendered_bodies) = rendered_function_sections(source);
+    let (rendered_call_count, rendered_generic_call_count) = rendered_call_counts(&rendered_bodies);
+    let rendered_abort_count =
+        rendered_bodies.matches("abort ").count() + rendered_bodies.matches("assert!(").count();
+    let rendered_write_ref_count = rendered_bodies
         .lines()
         .filter(|line| {
             let line = line.trim_start();
-            line.starts_with("*(&mut ") && line.contains(" = ")
+            line.starts_with('*') && line.contains(" = ")
         })
         .count();
-    let rendered_freeze_ref_count = source.matches("freeze(").count();
+    let rendered_freeze_ref_count = rendered_bodies.matches("freeze(").count();
     let rendered_arithmetic_count = [
         " + ", " - ", " * ", " / ", " % ", " << ", " >> ", " | ", " & ", " ^ ",
     ]
     .iter()
-    .map(|operator| source.matches(operator).count())
+    .map(|operator| rendered_bodies.matches(operator).count())
     .sum::<usize>();
     let rendered_comparison_count = [" == ", " != ", " < ", " > ", " <= ", " >= "]
         .iter()
-        .map(|operator| source.matches(operator).count())
+        .map(|operator| rendered_bodies.matches(operator).count())
         .sum::<usize>();
     let rendered_cast_count = [
         " as u8", " as u16", " as u32", " as u64", " as u128", " as u256",
     ]
     .iter()
-    .map(|cast| source.matches(cast).count())
+    .map(|cast| rendered_bodies.matches(cast).count())
     .sum::<usize>();
 
     let mut audit_warnings = Vec::new();
@@ -206,7 +247,7 @@ fn inspect_bytecode(
         (
             "function",
             module.function_defs().len(),
-            rendered_function_count(source),
+            rendered_function_count,
         ),
         ("call", call_count, rendered_call_count),
         (
@@ -408,6 +449,39 @@ mod tests {
                 "public entry fun destroy(l0: &mut TreasuryCap<TREASURY>, l1: Coin<TREASURY>) {}"
             ),
             "destroy must not be rendered with an empty body:\n{source}"
+        );
+    }
+
+    #[test]
+    fn coverage_scanner_handles_friend_assert_write_ref_and_ability_syntax() {
+        let source = r#"
+            module 0x1::coverage;
+
+            public(friend) fun version(): u64 {
+                return 1u64
+            }
+
+            public(friend) entry fun update<T: key + store>(target: &mut u64, value: u64) {
+                assert!(value > 0u64, 7u64);
+                *target = value;
+                *(table::borrow_mut<u64, u64>(&mut table, value)) = value + 1u64
+            }
+        "#;
+
+        let (function_count, bodies) = rendered_function_sections(source);
+        assert_eq!(function_count, 2);
+        assert_eq!(bodies.matches("assert!(").count(), 1);
+        assert_eq!(
+            bodies
+                .lines()
+                .filter(|line| line.trim_start().starts_with('*') && line.contains(" = "))
+                .count(),
+            2
+        );
+        assert_eq!(
+            bodies.matches(" + ").count(),
+            1,
+            "the `key + store` ability constraint is outside the function body"
         );
     }
 }
