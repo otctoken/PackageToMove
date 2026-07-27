@@ -1083,25 +1083,97 @@ fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
 }
 
 fn primitive_op_doc(context: &Context, op: &PrimitiveOp, args: &[Exp]) -> Doc {
-    let bin = |lhs: &Exp, sym: &str, rhs: &Exp| {
-        exp(context, lhs)
-            .concat_space(D::text(sym.to_string()))
-            .concat_space(exp(context, rhs))
-    };
-    // `&&` / `||` parenthesize boolean-operator children so nested compound conditions
-    // read unambiguously: `a && b || c` becomes `(a && b) || c`, etc.
-    let is_bool_compound = |e: &Exp| {
+    fn precedence(op: &PrimitiveOp) -> u8 {
+        match op {
+            PrimitiveOp::Or => 1,
+            PrimitiveOp::And => 2,
+            PrimitiveOp::Equal
+            | PrimitiveOp::NotEqual
+            | PrimitiveOp::LessThan
+            | PrimitiveOp::GreaterThan
+            | PrimitiveOp::LessThanOrEqual
+            | PrimitiveOp::GreaterThanOrEqual => 3,
+            PrimitiveOp::CastU8
+            | PrimitiveOp::CastU16
+            | PrimitiveOp::CastU32
+            | PrimitiveOp::CastU64
+            | PrimitiveOp::CastU128
+            | PrimitiveOp::CastU256 => 4,
+            PrimitiveOp::BitOr => 5,
+            PrimitiveOp::Xor => 6,
+            PrimitiveOp::BitAnd => 7,
+            PrimitiveOp::ShiftLeft | PrimitiveOp::ShiftRight => 8,
+            PrimitiveOp::Add | PrimitiveOp::Subtract => 9,
+            PrimitiveOp::Multiply | PrimitiveOp::Modulo | PrimitiveOp::Divide => 10,
+            PrimitiveOp::Not => 11,
+        }
+    }
+
+    fn is_cast(op: &PrimitiveOp) -> bool {
         matches!(
+            op,
+            PrimitiveOp::CastU8
+                | PrimitiveOp::CastU16
+                | PrimitiveOp::CastU32
+                | PrimitiveOp::CastU64
+                | PrimitiveOp::CastU128
+                | PrimitiveOp::CastU256
+        )
+    }
+
+    fn is_comparison(op: &PrimitiveOp) -> bool {
+        matches!(
+            op,
+            PrimitiveOp::Equal
+                | PrimitiveOp::NotEqual
+                | PrimitiveOp::LessThan
+                | PrimitiveOp::GreaterThan
+                | PrimitiveOp::LessThanOrEqual
+                | PrimitiveOp::GreaterThanOrEqual
+        )
+    }
+
+    // Preserve the expression tree recovered from the bytecode stack. Parentheses are required
+    // when a child binds less tightly, when a right child has the same precedence (the parser is
+    // left-associative), and around casts nested inside another primitive expression. The last
+    // rule also makes the cast boundary visually explicit in arithmetic such as
+    // `(amount as u128) * ((100 - tolerance) as u128) / 100u128`.
+    fn operand_doc(context: &Context, parent: &PrimitiveOp, child: &Exp, right_child: bool) -> Doc {
+        let doc = exp(context, child);
+        let Exp::Primitive { op: child_op, .. } = child else {
+            return doc;
+        };
+
+        let child_precedence = precedence(child_op);
+        let parent_precedence = precedence(parent);
+        let needs_parens = is_cast(child_op)
+            || child_precedence < parent_precedence
+            || (child_precedence == parent_precedence
+                && (right_child || is_comparison(parent) || is_comparison(child_op)));
+
+        if needs_parens {
+            doc.parens()
+        } else {
+            doc
+        }
+    }
+
+    let bin = |lhs: &Exp, sym: &str, rhs: &Exp| {
+        operand_doc(context, op, lhs, false)
+            .concat_space(D::text(sym.to_string()))
+            .concat_space(operand_doc(context, op, rhs, true))
+    };
+    // Keep the established explicit grouping for short-circuit expressions. Besides being easy
+    // to scan, this makes their control-flow boundaries visible in decompiled output.
+    let bool_arg = |e: &Exp| {
+        let doc = exp(context, e);
+        if matches!(
             e,
             Exp::Primitive {
                 op: PrimitiveOp::And | PrimitiveOp::Or,
                 ..
             }
-        )
-    };
-    let bool_arg = |e: &Exp| {
-        let doc = exp(context, e);
-        if is_bool_compound(e) {
+        ) {
             doc.parens()
         } else {
             doc
@@ -1112,14 +1184,23 @@ fn primitive_op_doc(context: &Context, op: &PrimitiveOp, args: &[Exp]) -> Doc {
             .concat_space(D::text(sym.to_string()))
             .concat_space(bool_arg(rhs))
     };
+    let cast = |ty: &str| {
+        let operand = match &args[0] {
+            Exp::Primitive { .. } => exp(context, &args[0]).parens(),
+            _ => exp(context, &args[0]),
+        };
+        operand
+            .concat_space(D::text("as"))
+            .concat_space(D::text(ty.to_owned()))
+    };
 
     match op {
-        PrimitiveOp::CastU8 => exp(context, &args[0]).concat(D::text("as u8")),
-        PrimitiveOp::CastU16 => exp(context, &args[0]).concat(D::text("as u16")),
-        PrimitiveOp::CastU32 => exp(context, &args[0]).concat(D::text("as u32")),
-        PrimitiveOp::CastU64 => exp(context, &args[0]).concat(D::text("as u64")),
-        PrimitiveOp::CastU128 => exp(context, &args[0]).concat(D::text("as u128")),
-        PrimitiveOp::CastU256 => exp(context, &args[0]).concat(D::text("as u256")),
+        PrimitiveOp::CastU8 => cast("u8"),
+        PrimitiveOp::CastU16 => cast("u16"),
+        PrimitiveOp::CastU32 => cast("u32"),
+        PrimitiveOp::CastU64 => cast("u64"),
+        PrimitiveOp::CastU128 => cast("u128"),
+        PrimitiveOp::CastU256 => cast("u256"),
 
         PrimitiveOp::Add => bin(&args[0], "+", &args[1]),
         PrimitiveOp::Subtract => bin(&args[0], "-", &args[1]),
@@ -1142,6 +1223,63 @@ fn primitive_op_doc(context: &Context, op: &PrimitiveOp, args: &[Exp]) -> Doc {
 
         PrimitiveOp::ShiftLeft => bin(&args[0], "<<", &args[1]),
         PrimitiveOp::ShiftRight => bin(&args[0], ">>", &args[1]),
+    }
+}
+
+#[cfg(test)]
+mod primitive_op_tests {
+    use super::*;
+
+    fn var(name: &str) -> Exp {
+        Exp::Variable(name.to_owned())
+    }
+
+    fn primitive(op: PrimitiveOp, args: Vec<Exp>) -> Exp {
+        Exp::Primitive { op, args }
+    }
+
+    fn render(e: &Exp) -> String {
+        let context = Context {
+            constant_table: IndexMap::new(),
+        };
+        exp(&context, e).render(100)
+    }
+
+    #[test]
+    fn arithmetic_keeps_bytecode_grouping_across_casts() {
+        let percentage = primitive(
+            PrimitiveOp::Subtract,
+            vec![Exp::Value(Value::U64(100)), var("tolerance")],
+        );
+        let product = primitive(
+            PrimitiveOp::Multiply,
+            vec![
+                primitive(PrimitiveOp::CastU128, vec![var("amount")]),
+                primitive(PrimitiveOp::CastU128, vec![percentage]),
+            ],
+        );
+        let expression = primitive(
+            PrimitiveOp::Divide,
+            vec![product, Exp::Value(Value::U128(100))],
+        );
+
+        assert_eq!(
+            render(&expression),
+            "(amount as u128) * ((100u64 - tolerance) as u128) / 100u128"
+        );
+    }
+
+    #[test]
+    fn right_nested_non_associative_arithmetic_is_parenthesized() {
+        let expression = primitive(
+            PrimitiveOp::Subtract,
+            vec![
+                var("a"),
+                primitive(PrimitiveOp::Subtract, vec![var("b"), var("c")]),
+            ],
+        );
+
+        assert_eq!(render(&expression), "a - (b - c)");
     }
 }
 

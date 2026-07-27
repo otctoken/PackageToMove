@@ -36,6 +36,7 @@ export type AnalyzeResult = {
 
 export type BytecodeVerification = {
   canonicalInput: "sui-chain-bytecode";
+  auditPolicy: "fail-closed-v1";
   bytecodeSha256: string;
   bytecodeSize: number;
   bytecodeVerified: boolean;
@@ -48,13 +49,15 @@ export type BytecodeVerification = {
   backwardBranchCount: number;
   genericCallCount: number;
   writeRefCount: number;
+  knownInstructionCoverage: boolean;
+  controlFlowFullyStructured: boolean;
+  auditWarnings: string[];
 };
 
 export type DecompileMetadata = {
-  engine: "rust-move-decompiler" | "zig-wasm";
-  fallback: boolean;
-  verification?: BytecodeVerification;
-  warning?: string;
+  engine: "rust-move-decompiler";
+  fallback: false;
+  verification: BytecodeVerification;
 };
 
 export type RustDecompileResponse = {

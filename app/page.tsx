@@ -32,7 +32,6 @@ import type {
   PackageResult,
   RustDecompileResponse,
 } from "@/lib/types";
-import { decompileMoveBytecode } from "@/lib/wasm-decompiler";
 
 const EXAMPLES = [
   { label: "Sui Framework", value: "0x2" },
@@ -237,7 +236,6 @@ export default function Home() {
     setDecompileError("");
 
     void (async () => {
-      let rustFailure = "";
       try {
         const response = await fetch("/api/decompile", {
           method: "POST",
@@ -245,9 +243,19 @@ export default function Home() {
           body: requestBody,
           signal: controller.signal,
         });
-        const payload = (await response.json()) as
-          | RustDecompileResponse
-          | { error?: string };
+        const responseText = await response.text();
+        let payload: RustDecompileResponse | { error?: string };
+        try {
+          payload = JSON.parse(responseText) as
+            | RustDecompileResponse
+            | { error?: string };
+        } catch {
+          throw new Error(
+            response.ok
+              ? "Rust 反编译服务返回了无效响应"
+              : responseText.slice(0, 500) || "Rust 反编译服务不可用",
+          );
+        }
         if (!response.ok || !("source" in payload)) {
           throw new Error(
             "error" in payload && payload.error
@@ -257,9 +265,15 @@ export default function Home() {
         }
         if (
           payload.verification.canonicalInput !== "sui-chain-bytecode" ||
-          !payload.verification.bytecodeVerified
+          payload.verification.auditPolicy !== "fail-closed-v1" ||
+          !payload.verification.bytecodeVerified ||
+          !payload.verification.knownInstructionCoverage ||
+          !payload.verification.controlFlowFullyStructured ||
+          payload.verification.auditWarnings.length > 0
         ) {
-          throw new Error("Rust 服务未确认链上字节码校验");
+          throw new Error(
+            "反编译结果未通过全局 fail-closed 审计准入，已拒绝显示",
+          );
         }
         setFullSources((current) => ({
           ...current,
@@ -276,43 +290,12 @@ export default function Home() {
         return;
       } catch (cause) {
         if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-        rustFailure =
-          cause instanceof Error ? cause.message : "Rust 反编译服务不可用";
-      }
-
-      const fallbackResponse = await fetch("/api/bytecode", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: requestBody,
-        signal: controller.signal,
-      });
-      const fallbackPayload = (await fallbackResponse.json()) as {
-        bytecode?: string;
-        error?: string;
-      };
-      if (!fallbackResponse.ok || !fallbackPayload.bytecode) {
         throw new Error(
-          `${rustFailure}；WASM 回退失败：${
-            fallbackPayload.error ?? "无法读取链上字节码"
-          }`,
+          cause instanceof Error
+            ? cause.message
+            : "Rust 反编译服务不可用；为避免误导，不使用未验证 fallback",
         );
       }
-      const source = await decompileMoveBytecode(
-        fallbackPayload.bytecode,
-        module.disassembly,
-      );
-      setFullSources((current) => ({
-        ...current,
-        [sourceKey]: source,
-      }));
-      setDecompileMetadata((current) => ({
-        ...current,
-        [sourceKey]: {
-          engine: "zig-wasm",
-          fallback: true,
-          warning: `Rust 主引擎失败：${rustFailure}`,
-        },
-      }));
     })()
       .catch((cause) => {
         if (cause instanceof DOMException && cause.name === "AbortError") return;
@@ -567,11 +550,9 @@ export default function Home() {
                   <span><strong>{module?.name ?? "module"}</strong>.move</span>
                   <i className="verified">
                     <ShieldCheck size={13} />
-                    {sourceMetadata?.fallback
-                      ? "WASM FALLBACK"
-                      : sourceMetadata?.verification?.bytecodeVerified
-                        ? "RUST VERIFIED"
-                        : "ON-CHAIN"}
+                    {sourceMetadata?.verification.bytecodeVerified
+                      ? "RUST VERIFIED"
+                      : "ON-CHAIN"}
                   </i>
                 </div>
                 <div className="code-actions">
@@ -593,11 +574,7 @@ export default function Home() {
                   <GitBranch size={14} /> Bytecode IR
                 </button>
                 <span>
-                  {sourceMetadata?.fallback
-                    ? "ZIG/WASM FALLBACK"
-                    : fullSource
-                      ? "BYTECODE-DERIVED VIEW"
-                      : "ABI PREVIEW"}
+                  {fullSource ? "BYTECODE-DERIVED VIEW" : "ABI PREVIEW"}
                 </span>
               </div>
               {activeTab === "source" && decompilingKey === sourceKey && (
@@ -620,26 +597,27 @@ export default function Home() {
                   </button>
                 </div>
               )}
-              {activeTab === "source" && sourceMetadata?.fallback && (
-                <div className="decompile-error">
-                  <CircleAlert size={14} />
-                  <span>
-                    当前为 Zig/WASM 故障回退结果。{sourceMetadata.warning}
-                    ；请用 Bytecode IR 作为唯一真相。
-                  </span>
-                </div>
-              )}
+              {activeTab === "source" &&
+                sourceMetadata?.verification &&
+                sourceMetadata.verification.auditWarnings.length > 0 && (
+                  <div className="decompile-error">
+                    <CircleAlert size={14} />
+                    <span>
+                      反编译覆盖检查发现风险：
+                      {sourceMetadata.verification.auditWarnings.join("；")}
+                    </span>
+                  </div>
+                )}
               <SourceView code={visibleCode} />
               <div className="code-status">
                 <span>
                   <i />{" "}
-                  {sourceMetadata?.fallback
-                    ? "Zig/WASM fallback"
-                    : sourceMetadata?.verification?.bytecodeVerified
-                      ? "Rust · chain bytecode verified"
-                      : fullSource
-                        ? "Full decompile"
-                        : "Sui Move"}
+                  {sourceMetadata?.verification.knownInstructionCoverage &&
+                  sourceMetadata.verification.controlFlowFullyStructured
+                    ? "Rust · fail-closed coverage passed"
+                    : fullSource
+                      ? "Full decompile"
+                      : "Sui Move"}
                 </span>
                 <span>
                   {sourceMetadata?.verification
