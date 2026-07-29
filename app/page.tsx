@@ -27,6 +27,7 @@ import {
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type {
   AnalyzeResult,
+  BytecodeVerification,
   DecompileMetadata,
   Network,
   PackageResult,
@@ -51,6 +52,57 @@ function formatTime(ms: number) {
 function explorerUrl(network: Network, id: string) {
   const segment = network === "mainnet" ? "mainnet" : network;
   return `https://suiscan.xyz/${segment}/object/${id}`;
+}
+
+function passesAuditGate(verification: BytecodeVerification) {
+  return (
+    verification.canonicalInput === "sui-chain-bytecode" &&
+    verification.auditPolicy === "fail-closed-v1" &&
+    verification.bytecodeVerified &&
+    verification.knownInstructionCoverage &&
+    verification.controlFlowFullyStructured &&
+    verification.auditWarnings.length === 0
+  );
+}
+
+async function fetchVerifiedDecompile(
+  packageId: string,
+  module: string,
+  network: Network,
+  signal?: AbortSignal,
+) {
+  const response = await fetch("/api/decompile", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ packageId, module, network }),
+    signal,
+  });
+  const responseText = await response.text();
+  let payload: RustDecompileResponse | { error?: string };
+  try {
+    payload = JSON.parse(responseText) as
+      | RustDecompileResponse
+      | { error?: string };
+  } catch {
+    throw new Error(
+      response.ok
+        ? "Rust decompiler returned an invalid response"
+        : responseText.slice(0, 500) || "Rust decompiler is unavailable",
+    );
+  }
+  if (!response.ok || !("source" in payload)) {
+    throw new Error(
+      "error" in payload && payload.error
+        ? payload.error
+        : "Rust decompiler is unavailable",
+    );
+  }
+  if (!passesAuditGate(payload.verification)) {
+    throw new Error(
+      "Decompilation did not pass the global fail-closed audit gate",
+    );
+  }
+  return payload;
 }
 
 function SourceView({ code }: { code: string }) {
@@ -196,6 +248,12 @@ export default function Home() {
   const [decompilingKey, setDecompilingKey] = useState("");
   const [decompileError, setDecompileError] = useState("");
   const [decompileRetry, setDecompileRetry] = useState(0);
+  const [batchDownloading, setBatchDownloading] = useState(false);
+  const [batchDownloadProgress, setBatchDownloadProgress] = useState({
+    completed: 0,
+    total: 0,
+  });
+  const [batchDownloadError, setBatchDownloadError] = useState("");
 
   const activePackage = result?.packages.find((pkg) => pkg.id === activePackageId);
   const filteredModules = useMemo(
@@ -227,54 +285,17 @@ export default function Home() {
   useEffect(() => {
     if (!result || !activePackage || !module || !sourceKey || fullSource) return;
     const controller = new AbortController();
-    const requestBody = JSON.stringify({
-      packageId: activePackage.id,
-      module: module.name,
-      network: result.network,
-    });
     setDecompilingKey(sourceKey);
     setDecompileError("");
 
     void (async () => {
       try {
-        const response = await fetch("/api/decompile", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: requestBody,
-          signal: controller.signal,
-        });
-        const responseText = await response.text();
-        let payload: RustDecompileResponse | { error?: string };
-        try {
-          payload = JSON.parse(responseText) as
-            | RustDecompileResponse
-            | { error?: string };
-        } catch {
-          throw new Error(
-            response.ok
-              ? "Rust 反编译服务返回了无效响应"
-              : responseText.slice(0, 500) || "Rust 反编译服务不可用",
-          );
-        }
-        if (!response.ok || !("source" in payload)) {
-          throw new Error(
-            "error" in payload && payload.error
-              ? payload.error
-              : "Rust 反编译服务不可用",
-          );
-        }
-        if (
-          payload.verification.canonicalInput !== "sui-chain-bytecode" ||
-          payload.verification.auditPolicy !== "fail-closed-v1" ||
-          !payload.verification.bytecodeVerified ||
-          !payload.verification.knownInstructionCoverage ||
-          !payload.verification.controlFlowFullyStructured ||
-          payload.verification.auditWarnings.length > 0
-        ) {
-          throw new Error(
-            "反编译结果未通过全局 fail-closed 审计准入，已拒绝显示",
-          );
-        }
+        const payload = await fetchVerifiedDecompile(
+          activePackage.id,
+          module.name,
+          result.network,
+          controller.signal,
+        );
         setFullSources((current) => ({
           ...current,
           [sourceKey]: payload.source,
@@ -333,6 +354,8 @@ export default function Home() {
       setDecompileMetadata({});
       setDecompileError("");
       setDecompileRetry(0);
+      setBatchDownloadError("");
+      setBatchDownloadProgress({ completed: 0, total: 0 });
       setActivePackageId(data.rootPackage);
       const root = data.packages.find((pkg) => pkg.id === data.rootPackage);
       setActiveModule(root?.modules[0]?.name ?? "");
@@ -366,6 +389,142 @@ export default function Home() {
     anchor.download = `${module.name}.${activeTab === "source" ? "move" : "mv.disasm"}`;
     anchor.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function downloadPackageSources() {
+    if (!result || !activePackage || batchDownloading) return;
+
+    const selectedPackage = activePackage;
+    const modules = selectedPackage.modules;
+    if (!modules.length) {
+      setBatchDownloadError("当前 Package 没有可下载的模块。");
+      return;
+    }
+
+    setBatchDownloading(true);
+    setBatchDownloadError("");
+    setBatchDownloadProgress({ completed: 0, total: modules.length });
+
+    const sources: Record<string, string> = {};
+    const metadata: Record<string, DecompileMetadata> = {};
+    const failures: Array<{ module: string; message: string }> = [];
+    let nextIndex = 0;
+    let completed = 0;
+
+    const worker = async () => {
+      while (nextIndex < modules.length) {
+        const item = modules[nextIndex++];
+        const key = `${selectedPackage.id}::${item.name}`;
+        try {
+          const cachedSource = fullSources[key];
+          const cachedMetadata = decompileMetadata[key];
+          if (
+            cachedSource &&
+            cachedMetadata &&
+            passesAuditGate(cachedMetadata.verification)
+          ) {
+            sources[item.name] = cachedSource;
+            metadata[key] = cachedMetadata;
+          } else {
+            const payload = await fetchVerifiedDecompile(
+              selectedPackage.id,
+              item.name,
+              result.network,
+            );
+            sources[item.name] = payload.source;
+            metadata[key] = {
+              engine: payload.engine,
+              fallback: false,
+              verification: payload.verification,
+            };
+          }
+        } catch (cause) {
+          failures.push({
+            module: item.name,
+            message:
+              cause instanceof Error ? cause.message : "Unknown decompilation error",
+          });
+        } finally {
+          completed += 1;
+          setBatchDownloadProgress({ completed, total: modules.length });
+        }
+      }
+    };
+
+    try {
+      await Promise.all(
+        Array.from(
+          { length: Math.min(3, modules.length) },
+          () => worker(),
+        ),
+      );
+
+      setFullSources((current) => ({ ...current, ...Object.fromEntries(
+        Object.entries(sources).map(([name, source]) => [
+          `${selectedPackage.id}::${name}`,
+          source,
+        ]),
+      ) }));
+      setDecompileMetadata((current) => ({ ...current, ...metadata }));
+
+      if (failures.length > 0) {
+        const details = failures
+          .slice(0, 5)
+          .map((failure) => `${failure.module}: ${failure.message}`)
+          .join("；");
+        const remainder =
+          failures.length > 5 ? `；另有 ${failures.length - 5} 个模块失败` : "";
+        throw new Error(
+          `${failures.length}/${modules.length} 个模块未通过审计，已取消 ZIP 下载。${details}${remainder}`,
+        );
+      }
+
+      const { strToU8, zipSync } = await import("fflate");
+      const files: Record<string, Uint8Array> = {};
+      const manifestModules = modules.map((item) => {
+        const key = `${selectedPackage.id}::${item.name}`;
+        const verification = metadata[key]?.verification ??
+          decompileMetadata[key]?.verification;
+        files[`${item.name}.move`] = strToU8(sources[item.name]);
+        return {
+          name: item.name,
+          file: `${item.name}.move`,
+          bytecodeSha256: verification?.bytecodeSha256,
+          bytecodeSize: verification?.bytecodeSize,
+          instructionCount: verification?.instructionCount,
+          auditPolicy: verification?.auditPolicy,
+          bytecodeVerified: verification?.bytecodeVerified,
+        };
+      });
+      files["manifest.json"] = strToU8(
+        JSON.stringify(
+          {
+            packageId: selectedPackage.id,
+            network: result.network,
+            generatedAt: new Date().toISOString(),
+            source: "sui-chain-bytecode",
+            modules: manifestModules,
+          },
+          null,
+          2,
+        ),
+      );
+
+      const archive = zipSync(files, { level: 6 });
+      const blob = new Blob([archive], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${selectedPackage.id}-${result.network}-decompiled.zip`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) {
+      setBatchDownloadError(
+        cause instanceof Error ? cause.message : "批量下载失败，请稍后重试。",
+      );
+    } finally {
+      setBatchDownloading(false);
+    }
   }
 
   return (
@@ -558,6 +717,19 @@ export default function Home() {
                 <div className="code-actions">
                   <button onClick={copyCode}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button>
                   <button onClick={downloadCode}><Download size={15} /> Download</button>
+                  <button
+                    aria-label="Download all verified decompiled modules as ZIP"
+                    disabled={batchDownloading}
+                    onClick={() => void downloadPackageSources()}
+                    title="Download every verified module in the selected Package"
+                  >
+                    {batchDownloading
+                      ? <LoaderCircle className="spin" size={15} />
+                      : <Layers3 size={15} />}
+                    {batchDownloading
+                      ? `${batchDownloadProgress.completed}/${batchDownloadProgress.total}`
+                      : "Download All"}
+                  </button>
                 </div>
               </div>
               <div className="code-tabs">
@@ -577,6 +749,20 @@ export default function Home() {
                   {fullSource ? "BYTECODE-DERIVED VIEW" : "ON-CHAIN DISASSEMBLY"}
                 </span>
               </div>
+              {batchDownloading && (
+                <div className="decompile-progress">
+                  <LoaderCircle className="spin" size={14} />
+                  正在验证并打包当前 Package：{batchDownloadProgress.completed}/
+                  {batchDownloadProgress.total} 个模块
+                </div>
+              )}
+              {batchDownloadError && (
+                <div className="decompile-error">
+                  <CircleAlert size={14} />
+                  <span>{batchDownloadError}</span>
+                  <button onClick={() => setBatchDownloadError("")}>关闭</button>
+                </div>
+              )}
               {activeTab === "source" && decompilingKey === sourceKey && (
                 <div className="decompile-progress">
                   <LoaderCircle className="spin" size={14} />

@@ -241,6 +241,7 @@ main { min-height: 100vh; overflow: hidden; background: linear-gradient(180deg, 
 .code-actions { display: flex; gap: 6px; }
 .code-actions button { display: flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: #0b1714; color: #829990; padding: 6px 8px; border-radius: 5px; font-size: 9px; cursor: pointer; }
 .code-actions button:hover { color: var(--green); border-color: var(--line-bright); }
+.code-actions button:disabled { opacity: .65; cursor: progress; color: var(--green); }
 .code-tabs { height: 42px; padding: 0 11px; display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--line); background: #091310; }
 .code-tabs button { height: 100%; padding: 0 10px; display: flex; align-items: center; gap: 6px; border: 0; border-bottom: 1px solid transparent; background: none; color: #657c73; font-size: 9px; cursor: pointer; }
 .code-tabs button.active { color: var(--green); border-bottom-color: var(--green); }
