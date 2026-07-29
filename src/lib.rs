@@ -132,7 +132,13 @@ fn rendered_call_counts(source: &str) -> (usize, usize) {
         while next < bytes.len() && bytes[next].is_ascii_whitespace() {
             next += 1;
         }
-        if next < bytes.len() && bytes[next] == b'(' {
+        // VecUnpack(_, 0) is rendered by the decompiler as the source-level
+        // intrinsic `std::vector::destroy_empty(...)`. It is a vector bytecode
+        // instruction, not a Call/CallGeneric instruction, so it must not
+        // inflate ordinary call coverage.
+        let is_empty_vec_unpack = bytes[..cursor].ends_with(b"std::vector")
+            && &bytes[cursor + 2..end] == b"destroy_empty";
+        if next < bytes.len() && bytes[next] == b'(' && !is_empty_vec_unpack {
             call_count += 1;
             generic_call_count += usize::from(generic);
         }
@@ -217,6 +223,7 @@ fn inspect_bytecode(
     let mut arithmetic_count = 0;
     let mut comparison_count = 0;
     let mut cast_count = 0;
+    let mut empty_vec_unpack_count = 0;
     let mut unsupported_instruction_count = 0;
 
     for definition in module.function_defs() {
@@ -262,6 +269,10 @@ fn inspect_bytecode(
                 | Bytecode::CastU64
                 | Bytecode::CastU128
                 | Bytecode::CastU256 => cast_count += 1,
+                Bytecode::VecUnpack(_, count) if *count == 0 => {
+                    empty_vec_unpack_count += 1;
+                }
+                Bytecode::VecUnpack(_, _) => unsupported_instruction_count += 1,
                 Bytecode::MutBorrowGlobalDeprecated(_)
                 | Bytecode::ImmBorrowGlobalDeprecated(_)
                 | Bytecode::ExistsDeprecated(_)
@@ -300,6 +311,9 @@ fn inspect_bytecode(
     .iter()
     .map(|cast| rendered_bodies.matches(cast).count())
     .sum::<usize>();
+    let rendered_empty_vec_unpack_count = rendered_bodies
+        .matches("std::vector::destroy_empty")
+        .count();
 
     let mut audit_warnings = Vec::new();
     let coverage_checks = [
@@ -320,6 +334,11 @@ fn inspect_bytecode(
         ("arithmetic", arithmetic_count, rendered_arithmetic_count),
         ("comparison", comparison_count, rendered_comparison_count),
         ("cast", cast_count, rendered_cast_count),
+        (
+            "VecUnpack(0)",
+            empty_vec_unpack_count,
+            rendered_empty_vec_unpack_count,
+        ),
     ];
     for (kind, bytecode_count, source_count) in coverage_checks {
         if bytecode_count != source_count {
@@ -431,6 +450,19 @@ mod tests {
                     l1
                 );
                 m::plain_call()
+            }
+        "#;
+
+        assert_eq!(rendered_call_counts(source), (2, 1));
+    }
+
+    #[test]
+    fn rendered_call_counter_excludes_empty_vec_unpack_intrinsic() {
+        let source = r#"
+            fun f<T>() {
+                bag::destroy_empty(l0);
+                std::vector::destroy_empty(l1);
+                m::generic<T>()
             }
         "#;
 
