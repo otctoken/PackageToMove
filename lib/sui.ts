@@ -1,22 +1,13 @@
 import { AnalyzeResult, Network, PackageResult } from "@/lib/types";
 import { decompileModule } from "@/lib/decompiler";
 
-const ENDPOINTS: Record<Network, { graphql: string; rpc: string }> = {
-  mainnet: {
-    graphql:
-      process.env.SUI_MAINNET_GRAPHQL ?? "https://graphql.mainnet.sui.io/graphql",
-    rpc: process.env.SUI_MAINNET_RPC ?? "https://fullnode.mainnet.sui.io:443",
-  },
-  testnet: {
-    graphql:
-      process.env.SUI_TESTNET_GRAPHQL ?? "https://graphql.testnet.sui.io/graphql",
-    rpc: process.env.SUI_TESTNET_RPC ?? "https://fullnode.testnet.sui.io:443",
-  },
-  devnet: {
-    graphql:
-      process.env.SUI_DEVNET_GRAPHQL ?? "https://graphql.devnet.sui.io/graphql",
-    rpc: process.env.SUI_DEVNET_RPC ?? "https://fullnode.devnet.sui.io:443",
-  },
+const ENDPOINTS: Record<Network, string> = {
+  mainnet:
+    process.env.SUI_MAINNET_GRAPHQL ?? "https://graphql.mainnet.sui.io/graphql",
+  testnet:
+    process.env.SUI_TESTNET_GRAPHQL ?? "https://graphql.testnet.sui.io/graphql",
+  devnet:
+    process.env.SUI_DEVNET_GRAPHQL ?? "https://graphql.devnet.sui.io/graphql",
 };
 
 const GRAPHQL_QUERY = `
@@ -85,7 +76,7 @@ async function fetchGraphql(network: Network, id: string) {
   let cursor: string | null = null;
   let object: NonNullable<NonNullable<GraphResponse["data"]>["object"]> | undefined;
   do {
-    const result: GraphResponse = await postJson(ENDPOINTS[network].graphql, {
+    const result: GraphResponse = await postJson(ENDPOINTS[network], {
       query: GRAPHQL_QUERY,
       variables: { address: id, after: cursor },
     });
@@ -107,20 +98,6 @@ async function fetchGraphql(network: Network, id: string) {
   };
 }
 
-async function fetchNormalized(network: Network, id: string) {
-  const result = await postJson<{
-    result?: Record<string, unknown>;
-    error?: { message: string };
-  }>(ENDPOINTS[network].rpc, {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "sui_getNormalizedMoveModulesByPackage",
-    params: [id],
-  });
-  if (result.error) throw new Error(result.error.message);
-  return result.result ?? {};
-}
-
 function dependenciesFromText(text: string, ownId: string) {
   const found = new Set<string>();
   const regex = /0x([0-9a-fA-F]{1,64})::/g;
@@ -131,37 +108,15 @@ function dependenciesFromText(text: string, ownId: string) {
   return [...found];
 }
 
-function dependenciesFromAbi(value: unknown, ownId: string) {
-  const found = new Set<string>();
-  const walk = (item: unknown) => {
-    if (typeof item === "string" && /^0x[0-9a-f]{1,64}$/i.test(item)) {
-      const id = `0x${item.slice(2).toLowerCase().padStart(64, "0")}`;
-      if (id !== ownId) found.add(id);
-      return;
-    }
-    if (Array.isArray(item)) {
-      item.forEach(walk);
-      return;
-    }
-    if (item && typeof item === "object") {
-      Object.values(item as Record<string, unknown>).forEach(walk);
-    }
-  };
-  walk(value);
-  return [...found];
-}
-
 async function fetchPackage(
   network: Network,
   id: string,
   depth: number,
 ): Promise<PackageResult> {
-  const [gql, normalized] = await Promise.allSettled([
-    fetchGraphql(network, id),
-    fetchNormalized(network, id),
-  ]);
-
-  if (gql.status === "rejected" && normalized.status === "rejected") {
+  let graphData;
+  try {
+    graphData = await fetchGraphql(network, id);
+  } catch (error) {
     return {
       id,
       shortId: shortId(id),
@@ -171,21 +126,12 @@ async function fetchPackage(
       dependencies: [],
       depth,
       status: "unavailable",
-      warning: gql.reason instanceof Error ? gql.reason.message : "无法读取 Package",
+      warning: error instanceof Error ? error.message : "无法读取 Package",
     };
   }
 
-  const graphData =
-    gql.status === "fulfilled"
-      ? gql.value
-      : { version: null, digest: null, modules: [] };
-  const abi = normalized.status === "fulfilled" ? normalized.value : {};
-  const moduleNames = new Set([
-    ...graphData.modules.map((module) => module.name),
-    ...Object.keys(abi),
-  ]);
-
-  const modules = [...moduleNames]
+  const modules = graphData.modules
+    .map((module) => module.name)
     .sort()
     .map((name) => {
       const bytecode =
@@ -193,7 +139,7 @@ async function fetchPackage(
       const decompiled = decompileModule(
         name,
         id,
-        (abi[name] as Parameters<typeof decompileModule>[2]) ?? null,
+        null,
         bytecode,
       );
       return {
@@ -207,13 +153,9 @@ async function fetchPackage(
 
   const corpus = [
     ...graphData.modules.map((module) => module.disassembly ?? ""),
-    JSON.stringify(abi),
   ].join("\n");
 
-  const dependencies = new Set([
-    ...dependenciesFromText(corpus, id),
-    ...dependenciesFromAbi(abi, id),
-  ]);
+  const dependencies = dependenciesFromText(corpus, id);
 
   return {
     id,
@@ -221,16 +163,9 @@ async function fetchPackage(
     version: graphData.version,
     digest: graphData.digest,
     modules,
-    dependencies: [...dependencies],
+    dependencies,
     depth,
-    status:
-      gql.status === "fulfilled" && normalized.status === "fulfilled" ? "ok" : "partial",
-    warning:
-      gql.status === "rejected"
-        ? "GraphQL 反汇编暂不可用，已回退到 ABI"
-        : normalized.status === "rejected"
-          ? "标准化 ABI 暂不可用，已回退到字节码反汇编"
-          : undefined,
+    status: "ok",
   };
 }
 

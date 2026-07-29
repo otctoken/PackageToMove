@@ -1,8 +1,10 @@
 // Copyright (c) 2026 SuiScope contributors
 // SPDX-License-Identifier: MIT
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use move_binary_format::file_format::{Bytecode, CompiledModule};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use tempfile::TempDir;
@@ -27,6 +29,63 @@ pub struct BytecodeVerification {
     pub known_instruction_coverage: bool,
     pub control_flow_fully_structured: bool,
     pub audit_warnings: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct GraphQlEnvelope {
+    data: Option<GraphQlData>,
+    errors: Option<Vec<GraphQlError>>,
+}
+
+#[derive(Deserialize)]
+struct GraphQlData {
+    package: Option<GraphQlPackage>,
+}
+
+#[derive(Deserialize)]
+struct GraphQlPackage {
+    module: Option<GraphQlModule>,
+    #[serde(default)]
+    linkage: Value,
+}
+
+#[derive(Deserialize)]
+struct GraphQlModule {
+    name: String,
+    bytes: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GraphQlError {
+    message: String,
+}
+
+pub fn decode_graphql_module_response(
+    response: Value,
+    expected_module: &str,
+) -> Result<(Vec<u8>, Value), String> {
+    let response: GraphQlEnvelope = serde_json::from_value(response)
+        .map_err(|error| format!("Invalid Sui GraphQL response: {error}"))?;
+    if let Some(error) = response.errors.and_then(|errors| errors.into_iter().next()) {
+        return Err(format!("Sui GraphQL error: {}", error.message));
+    }
+    let package = response
+        .data
+        .and_then(|data| data.package)
+        .ok_or_else(|| "Address is not a Move package or does not exist".to_owned())?;
+    let module = package
+        .module
+        .ok_or_else(|| format!("Package does not contain module {expected_module}"))?;
+    if module.name != expected_module {
+        return Err("Sui GraphQL returned an unexpected module".to_owned());
+    }
+    let encoded = module
+        .bytes
+        .ok_or_else(|| "Sui GraphQL did not return module bytecode".to_owned())?;
+    let bytecode = BASE64
+        .decode(encoded)
+        .map_err(|error| format!("Invalid module bytecode: {error}"))?;
+    Ok((bytecode, package.linkage))
 }
 
 fn rendered_call_counts(source: &str) -> (usize, usize) {
@@ -355,7 +414,7 @@ pub fn decompile_verified_bytecode(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    use serde_json::json;
 
     const RANGE_MODULE: &[u8] =
         include_bytes!("../vendor/move-decompiler-zig/src/test_data/range.mv");
@@ -376,6 +435,42 @@ mod tests {
         "#;
 
         assert_eq!(rendered_call_counts(source), (2, 1));
+    }
+
+    #[test]
+    fn graphql_module_response_preserves_exact_bytes_and_linkage() {
+        let response = json!({
+            "data": {
+                "package": {
+                    "module": {
+                        "name": "math",
+                        "bytes": "AQIDBA=="
+                    },
+                    "linkage": [{
+                        "originalId": "0x1",
+                        "upgradedId": "0x1",
+                        "version": 25
+                    }]
+                }
+            }
+        });
+
+        let (bytes, linkage) =
+            decode_graphql_module_response(response, "math").expect("response must decode");
+        assert_eq!(bytes, [1, 2, 3, 4]);
+        assert_eq!(linkage[0]["version"], 25);
+    }
+
+    #[test]
+    fn graphql_errors_fail_closed_before_decompilation() {
+        let response = json!({
+            "data": null,
+            "errors": [{ "message": "upstream unavailable" }]
+        });
+
+        let error = decode_graphql_module_response(response, "math")
+            .expect_err("GraphQL errors must not produce bytecode");
+        assert_eq!(error, "Sui GraphQL error: upstream unavailable");
     }
 
     #[test]
@@ -407,7 +502,9 @@ mod tests {
         assert!(source.contains("is_new: !(l12)"));
         assert!(source.contains("type_name::with_defining_ids<T0>()"));
         assert!(source.contains("core::assert_is_manager<Range>"));
-        assert!(source.contains("dynamic_object_field::exists_with_type<TypeName, Parameters<T0>>"));
+        assert!(
+            source.contains("dynamic_object_field::exists_with_type<TypeName, Parameters<T0>>")
+        );
         assert!(source.contains("event::emit<RangeParametersSetEvent<T0>>"));
     }
 

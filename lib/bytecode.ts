@@ -1,11 +1,25 @@
 import { Network } from "@/lib/types";
 import { normalizePackageId } from "@/lib/sui";
 
-const RPC_ENDPOINTS: Record<Network, string> = {
-  mainnet: process.env.SUI_MAINNET_RPC ?? "https://fullnode.mainnet.sui.io:443",
-  testnet: process.env.SUI_TESTNET_RPC ?? "https://fullnode.testnet.sui.io:443",
-  devnet: process.env.SUI_DEVNET_RPC ?? "https://fullnode.devnet.sui.io:443",
+const GRAPHQL_ENDPOINTS: Record<Network, string> = {
+  mainnet:
+    process.env.SUI_MAINNET_GRAPHQL ?? "https://graphql.mainnet.sui.io/graphql",
+  testnet:
+    process.env.SUI_TESTNET_GRAPHQL ?? "https://graphql.testnet.sui.io/graphql",
+  devnet:
+    process.env.SUI_DEVNET_GRAPHQL ?? "https://graphql.devnet.sui.io/graphql",
 };
+
+const MODULE_QUERY = `
+  query ModuleBytecode($address: SuiAddress!, $module: String!) {
+    package(address: $address) {
+      module(name: $module) {
+        name
+        bytes
+      }
+    }
+  }
+`;
 
 async function postJson<T>(url: string, body: unknown, timeoutMs: number): Promise<T> {
   const controller = new AbortController();
@@ -32,31 +46,33 @@ async function fetchModuleBytecode(
   network: Network,
 ) {
   const response = await postJson<{
-    result?: {
-      data?: {
-        bcs?: {
-          dataType?: string;
-          moduleMap?: Record<string, string>;
+    data?: {
+      package?: {
+        module?: {
+          name: string;
+          bytes?: string;
         };
       };
     };
-    error?: { message?: string };
+    errors?: Array<{ message: string }>;
   }>(
-    RPC_ENDPOINTS[network],
+    GRAPHQL_ENDPOINTS[network],
     {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "sui_getObject",
-      params: [packageId, { showBcs: true }],
+      query: MODULE_QUERY,
+      variables: { address: packageId, module: moduleName },
     },
     20_000,
   );
-  if (response.error) throw new Error(response.error.message ?? "读取 Package 失败");
-  const bcs = response.result?.data?.bcs;
-  if (bcs?.dataType !== "package") throw new Error("该地址不是 Move Package");
-  const encoded = bcs.moduleMap?.[moduleName];
+  if (response.errors?.length) throw new Error(response.errors[0].message);
+  const pkg = response.data?.package;
+  if (!pkg) throw new Error("该地址不是 Move Package，或在所选网络中不存在");
+  const module = pkg.module;
+  if (!module || module.name !== moduleName) {
+    throw new Error(`Package 中不存在模块 ${moduleName}`);
+  }
+  const encoded = module.bytes;
   if (!encoded) throw new Error(`Package 中不存在模块 ${moduleName}`);
-  return Buffer.from(encoded, "base64").toString("hex");
+  return encoded;
 }
 
 export async function getMoveModuleBytecode(
@@ -72,6 +88,6 @@ export async function getMoveModuleBytecode(
   return {
     packageId,
     module: moduleName,
-    bytecode: Buffer.from(bytecode, "hex").toString("base64"),
+    bytecode,
   };
 }

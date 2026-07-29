@@ -5,7 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
 
@@ -14,15 +16,10 @@ move-bytecode-verifier = { path = "vendor/move-rust/crates/move-bytecode-verifie
 move-decompiler = { path = "vendor/move-rust/crates/move-decompiler" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-base64 = "0.22"
 http-body-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 vercel_runtime = "2"
-
-[dev-dependencies]
-base64 = "0.22"
 
 [[bin]]
 name = "decompile"

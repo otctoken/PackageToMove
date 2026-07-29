@@ -5,10 +5,10 @@
 ## 反编译原则
 
 - 链上 `.mv` 字节码和 Bytecode IR 始终是唯一真相；源码视图不是原始源码证明。
-- `/api/decompile` 是 Rust Vercel Function。它自行从 Sui RPC 获取指定模块，解析并通过官方 Move bytecode verifier 后才反编译，浏览器不能提交任意字节码替换链上输入。
+- `/api/decompile` 是 Rust Vercel Function。它自行从 Sui GraphQL `MoveModule.bytes` 获取指定模块，解析并通过官方 Move bytecode verifier 后才反编译，浏览器不能提交任意字节码替换链上输入。
 - 主引擎采用固定 Sui commit 的官方 Rust `move-decompiler`，关闭优化，不经过 AI、LLM 或语义润色。
 - 反编译结果保留指令所表达的常量、函数调用、泛型实例、引用写入、分支、循环和 Abort 条件；典型条件 Abort 会显示为等价的 `assert!`。
-- Rust 服务失败时，前端才调用 `/api/bytecode` 并启用现有 Zig/WASM。界面会明确显示 **WASM FALLBACK**，不会静默冒充 Rust 校验结果。
+- Rust 服务或覆盖检查失败时，前端拒绝输出完整源码，不会降级到未经同等级验证的反编译结果。
 - 原始变量名、注释、源码排版和编译前已优化掉的表达式不在字节码中，因此不属于可恢复语义。
 
 ## 功能
@@ -18,7 +18,7 @@
 - 展示模块、结构体、公开函数和内部函数
 - 完整恢复函数调用、常量、分支、循环、局部值、字段读写和结构体构造
 - 下载 `.move` 与 `.mv.disasm`
-- Rust Vercel Function 主反编译器，Zig/WASM 浏览器端故障回退
+- Rust Vercel Function 主反编译器，完整反编译采用 fail-closed 准入
 - 展示字节码 SHA-256、指令、常量、Abort、分支、后向分支、泛型调用和写引用统计
 - 不使用 AI 优化模式，不需要第三方反编译 API 或 API Key
 - 响应式界面，可直接部署到 Vercel
@@ -63,7 +63,7 @@ zig build wasm
 3. Framework Preset 选择 **Next.js**。
 4. 点击 **Deploy**。
 
-Vercel 会从根目录的 `Cargo.toml` 构建 `api/decompile.rs` Rust Function，同时构建 Next.js 前端。默认使用公共 Sui 节点；生产流量较大时，可参考 `.env.example` 配置自己的 GraphQL/RPC 节点。
+Vercel 会从根目录的 `Cargo.toml` 构建 `api/decompile.rs` Rust Function，同时构建 Next.js 前端。默认使用公共 Sui GraphQL 节点；生产流量较大时，可参考 `.env.example` 配置自己的 GraphQL 服务商节点。
 
 ## 数据限制
 

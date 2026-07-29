@@ -123,7 +123,7 @@ function EmptyPreview() {
       <div className="empty-copy">
         <span className="eyebrow"><Sparkles size={13} /> READY TO TRACE</span>
         <h2>从一个地址，看清整棵依赖树</h2>
-        <p>输入已发布的 Package ID，查看模块、ABI、传递依赖与可读的 Move 反编译结果。</p>
+        <p>输入已发布的 Package ID，查看模块、链上反汇编、传递依赖与可读的 Move 反编译结果。</p>
       </div>
     </section>
   );
@@ -393,7 +393,7 @@ export default function Home() {
           <div className="status-pill"><i /> SUI MOVE INTELLIGENCE</div>
           <h1>Read what the chain<br /><span>really executes.</span></h1>
           <p className="hero-subtitle">
-            从 Package ID 出发，递归追踪依赖、还原 ABI，<br className="desktop-only" />
+            从 Package ID 出发，递归追踪依赖、读取链上模块，<br className="desktop-only" />
             并将链上 Move 字节码转换为可读源码。
           </p>
 
@@ -451,7 +451,7 @@ export default function Home() {
           <div className="loader-rings"><span /><span /><Braces size={24} /></div>
           <span className="eyebrow">RESOLVING PACKAGE GRAPH</span>
           <h2>正在沿着链上依赖向下追踪</h2>
-          <p>读取模块 ABI、反汇编字节码并重建可读签名…</p>
+          <p>通过 GraphQL 读取模块、反汇编字节码并重建可读签名…</p>
           <div className="loading-bar"><i /></div>
         </section>
       )}
@@ -574,7 +574,7 @@ export default function Home() {
                   <GitBranch size={14} /> Bytecode IR
                 </button>
                 <span>
-                  {fullSource ? "BYTECODE-DERIVED VIEW" : "ABI PREVIEW"}
+                  {fullSource ? "BYTECODE-DERIVED VIEW" : "ON-CHAIN DISASSEMBLY"}
                 </span>
               </div>
               {activeTab === "source" && decompilingKey === sourceKey && (
@@ -586,7 +586,7 @@ export default function Home() {
               {activeTab === "source" && decompileError && !fullSource && (
                 <div className="decompile-error">
                   <CircleAlert size={14} />
-                  <span>{decompileError}，当前显示 ABI 预览。</span>
+                  <span>{decompileError}，当前显示链上反汇编预览。</span>
                   <button
                     onClick={() => {
                       setDecompileError("");
@@ -644,8 +644,8 @@ export default function Home() {
           </article>
           <article>
             <span><Braces size={19} /></span>
-            <h3>ABI 源码重建</h3>
-            <p>还原结构体、能力、泛型约束、可见性、入口函数与完整类型签名。</p>
+            <h3>链上模块解析</h3>
+            <p>读取结构体、能力、泛型约束、可见性、入口函数与完整类型签名。</p>
           </article>
           <article>
             <span><ShieldCheck size={19} /></span>
