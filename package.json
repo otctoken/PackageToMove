@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "tsc --noEmit",
-    "test": "tsx scripts/test-decompiler.ts"
+    "test": "tsx scripts/test-decompiler.ts && tsx scripts/test-sui.ts"
   },
   "engines": {
     "node": ">=20.9.0"

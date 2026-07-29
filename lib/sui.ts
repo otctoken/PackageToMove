@@ -12,15 +12,18 @@ const ENDPOINTS: Record<Network, string> = {
 
 const GRAPHQL_QUERY = `
   query Package($address: SuiAddress!, $after: String) {
-    object(address: $address) {
+    package(address: $address) {
       address
       version
       digest
-      asMovePackage {
-        modules(first: 5, after: $after) {
-          nodes { name disassembly }
-          pageInfo { hasNextPage endCursor }
-        }
+      linkage {
+        originalId
+        upgradedId
+        version
+      }
+      modules(first: 5, after: $after) {
+        nodes { name disassembly }
+        pageInfo { hasNextPage endCursor }
       }
     }
   }
@@ -59,14 +62,17 @@ async function postJson<T>(url: string, body: unknown, timeoutMs = 18_000): Prom
 async function fetchGraphql(network: Network, id: string) {
   type GraphResponse = {
     data?: {
-      object?: {
+      package?: {
         version?: string | number;
         digest?: string;
-        asMovePackage?: {
-          modules?: {
-            nodes?: Array<{ name: string; disassembly?: string }>;
-            pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-          };
+        linkage?: Array<{
+          originalId: string;
+          upgradedId: string;
+          version: string | number;
+        }>;
+        modules?: {
+          nodes?: Array<{ name: string; disassembly?: string }>;
+          pageInfo?: { hasNextPage?: boolean; endCursor?: string };
         };
       };
     };
@@ -74,35 +80,43 @@ async function fetchGraphql(network: Network, id: string) {
   };
   const modules: Array<{ name: string; disassembly?: string }> = [];
   let cursor: string | null = null;
-  let object: NonNullable<NonNullable<GraphResponse["data"]>["object"]> | undefined;
+  let pkg: NonNullable<NonNullable<GraphResponse["data"]>["package"]> | undefined;
   do {
     const result: GraphResponse = await postJson(ENDPOINTS[network], {
       query: GRAPHQL_QUERY,
       variables: { address: id, after: cursor },
     });
     if (result.errors?.length) throw new Error(result.errors[0].message);
-    object = result.data?.object;
-    if (!object?.asMovePackage) {
+    pkg = result.data?.package;
+    if (!pkg) {
       throw new Error("该地址不是 Move Package，或在所选网络中不存在");
     }
-    const connection = object.asMovePackage.modules;
+    if (!Array.isArray(pkg.linkage)) {
+      throw new Error("Sui GraphQL 未返回 Package linkage，无法可靠分析依赖");
+    }
+    const connection = pkg.modules;
     modules.push(...(connection?.nodes ?? []));
     cursor = connection?.pageInfo?.hasNextPage
       ? connection.pageInfo.endCursor ?? null
       : null;
   } while (cursor && modules.length < 150);
   return {
-    version: object.version == null ? null : String(object.version),
-    digest: object.digest ?? null,
+    version: pkg.version == null ? null : String(pkg.version),
+    digest: pkg.digest ?? null,
     modules,
+    linkage: pkg.linkage,
   };
 }
 
-function dependenciesFromText(text: string, ownId: string) {
+export function dependenciesFromLinkage(
+  linkage: Array<{ upgradedId: string }>,
+  ownId: string,
+) {
   const found = new Set<string>();
-  const regex = /0x([0-9a-fA-F]{1,64})::/g;
-  for (const match of text.matchAll(regex)) {
-    const id = `0x${match[1].toLowerCase().padStart(64, "0")}`;
+  for (const entry of linkage) {
+    const raw = entry.upgradedId.trim().toLowerCase();
+    if (!/^0x[0-9a-f]{1,64}$/.test(raw)) continue;
+    const id = `0x${raw.slice(2).padStart(64, "0")}`;
     if (id !== ownId) found.add(id);
   }
   return [...found];
@@ -151,11 +165,7 @@ async function fetchPackage(
       };
     });
 
-  const corpus = [
-    ...graphData.modules.map((module) => module.disassembly ?? ""),
-  ].join("\n");
-
-  const dependencies = dependenciesFromText(corpus, id);
+  const dependencies = dependenciesFromLinkage(graphData.linkage, id);
 
   return {
     id,
