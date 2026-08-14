@@ -573,9 +573,12 @@ fn generate_output(terms: BTreeMap<D::Label, Out::Exp>, structured: D::Structure
 
 /// `terms` is `&mut` so EVERY downstream reference shares consumption: each `__cN` is
 /// emitted exactly once, at its first reference (whether by a top-level Block, a guard's
-/// cond_atoms setup, or a CondIf arm's Block). Branching forms (Switch cases, SelectorMatch
-/// arms) clone because those are runtime-disjoint scopes -- only one runs at a time and
-/// each needs its own copy. CondIf conseq/alt threads through the parent's terms because
+/// cond_atoms setup, or a CondIf arm's Block). Switch cases clone because those are
+/// runtime-disjoint scopes -- only one runs at a time and
+/// each needs its own copy. Terms consumed by any disjoint arm are nevertheless removed
+/// from the parent after all arms are lowered: a later reaching-condition guard may refer
+/// to the synthetic value produced in the selected arm, but must not execute that arm's
+/// bytecode a second time. CondIf conseq/alt threads through the parent's terms because
 /// conseq emitting `let __cN = ...` makes the binding scope-visible outside the if (Move
 /// `let` scopes to the enclosing block), so siblings shouldn't re-emit.
 fn generate_output_inner(
@@ -657,13 +660,24 @@ fn generate_output_inner(
             };
             let (cond, mut exps) = (seq.pop().unwrap(), seq);
 
+            let mut consumed_in_cases = BTreeSet::new();
             let cases = cases
                 .into_iter()
                 .map(|(v, c)| {
                     let mut case_terms = terms.clone();
-                    (v, generate_output_inner(&mut case_terms, c))
+                    let case = generate_output_inner(&mut case_terms, c);
+                    consumed_in_cases.extend(
+                        terms
+                            .keys()
+                            .filter(|label| !case_terms.contains_key(label))
+                            .copied(),
+                    );
+                    (v, case)
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            for label in consumed_in_cases {
+                terms.remove(&label);
+            }
             exps.push(Out::Exp::Switch(
                 Box::new(cond),
                 Out::TypeRef::Qualified(Out::ModuleRef::Qualified(enum_.0), enum_.1),
