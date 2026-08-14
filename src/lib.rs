@@ -148,6 +148,59 @@ fn rendered_call_counts(source: &str) -> (usize, usize) {
     (call_count, generic_call_count)
 }
 
+fn rendered_write_ref_count(source: &str) -> usize {
+    let bytes = source.as_bytes();
+    let mut count = 0;
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'*' {
+            cursor += 1;
+            continue;
+        }
+
+        let mut next = cursor + 1;
+        while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+            next += 1;
+        }
+
+        if next < bytes.len() && bytes[next] == b'(' {
+            let mut depth = 0usize;
+            while next < bytes.len() {
+                match bytes[next] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            next += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                next += 1;
+            }
+        } else {
+            while next < bytes.len()
+                && (bytes[next].is_ascii_alphanumeric()
+                    || matches!(bytes[next], b'_' | b'.' | b'[' | b']'))
+            {
+                next += 1;
+            }
+        }
+
+        while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+            next += 1;
+        }
+        if next < bytes.len() && bytes[next] == b'=' && bytes.get(next + 1).copied() != Some(b'=') {
+            count += 1;
+        }
+        cursor += 1;
+    }
+
+    count
+}
+
 fn rendered_function_sections(source: &str) -> (usize, String) {
     let source = source
         .lines()
@@ -287,13 +340,7 @@ fn inspect_bytecode(
     let (rendered_call_count, rendered_generic_call_count) = rendered_call_counts(&rendered_bodies);
     let rendered_abort_count =
         rendered_bodies.matches("abort ").count() + rendered_bodies.matches("assert!(").count();
-    let rendered_write_ref_count = rendered_bodies
-        .lines()
-        .filter(|line| {
-            let line = line.trim_start();
-            line.starts_with('*') && line.contains(" = ")
-        })
-        .count();
+    let rendered_write_ref_count = rendered_write_ref_count(&rendered_bodies);
     let rendered_freeze_ref_count = rendered_bodies.matches("freeze(").count();
     let rendered_arithmetic_count = [
         " + ", " - ", " * ", " / ", " % ", " << ", " >> ", " | ", " & ", " ^ ",
@@ -467,6 +514,29 @@ mod tests {
         "#;
 
         assert_eq!(rendered_call_counts(source), (2, 1));
+    }
+
+    #[test]
+    fn rendered_write_ref_counter_handles_multiline_conditional_lvalues() {
+        let source = r#"
+            fun update(target: &mut u64, other: &mut u64, value: u64) {
+                *target = value;
+                let read = *(if (value > 0) {
+                    target
+                } else {
+                    other
+                });
+                let product = value * (value + 1);
+                let unchanged = *target == product;
+                *(if (value > 0) {
+                    target
+                } else {
+                    other
+                }) = read
+            }
+        "#;
+
+        assert_eq!(rendered_write_ref_count(source), 2);
     }
 
     #[test]
