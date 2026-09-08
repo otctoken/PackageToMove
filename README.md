@@ -19,6 +19,7 @@
 - 重建函数调用、常量、分支、循环、局部值、字段读写和结构体构造，失败时保留链上反汇编
 - 下载 `.move` 与 `.mv.disasm`
 - Download All 导出 Move.toml、主包 sources/、dependencies/<包地址>/ 下各依赖的 Move.toml 与 sources/，并附字节码哈希和版本清单。依赖不能混入根包 sources/，否则改变包归属。
+- `0x1`～`0x8` 按地址精确跳过反编译，保留依赖元数据；`std`/`sui` 使用 CLI 隐式依赖，`0x3` 使用官方 `system = "sui_system"`。`0x5`～`0x8` 是系统对象，不是包；不为 `0x4` 虚构包配置。
 - Rust Vercel Function 主反编译器，完整反编译采用 fail-closed 准入
 - 展示字节码 SHA-256、指令、常量、Abort、分支、后向分支、泛型调用和写引用统计
 - 不使用 AI 优化模式，不需要第三方反编译 API 或 API Key
@@ -70,7 +71,7 @@ Vercel 会从根目录的 `Cargo.toml` 构建 `api/decompile.rs` Rust Function�
 
 - GraphQL 使用 `object(address, version) { asMovePackage }` 精确读取包，不使用会追踪升级的 `package(address)`。前后端校验包地址、版本和模块字节码哈希。
 - 下载文件是**待验证的重建项目**，不是已验证的可部署产物。manifest.json 明确记录 `buildVerified: false` 和 `semanticEquivalenceVerified: false`。链上不含原作者的测试专用代码。
-- 当前完整框架依赖重编译仍有已知失败：历史 friend 权限、条件表达式类型、标识符和框架编译属性；不能承诺所有合约均可构建或重新部署。不得为了编译通过扩大权限或删除逻辑。
+- 旧方案反编译框架源码有 friend 权限、条件表达式类型、标识符和框架编译属性等构建失败。现改用官方系统依赖，目标 ac55 包的实际导出已构建成功，额外添加的 4 项冒烟测试通过；不能据此承诺所有业务合约等价或可重新部署。不得为了编译通过扩大权限或删除逻辑。
 - 本次主网包身份核对和实际构建记录见 [验证报告](docs/exact-package-validation.md)。
 
 - 单次分析最多递归 120 个 Package，防止异常依赖图耗尽 Serverless 执行时间。

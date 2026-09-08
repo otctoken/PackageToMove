@@ -1,14 +1,17 @@
 import type { AnalyzeResult, DecompileMetadata, PackageResult } from "./types";
+import { skipSystemDecompilation, systemDependency } from "./system-addresses";
 
 const packageName = (id: string) => /^0x0*1$/.test(id) ? "MoveStdlib" :
   /^0x0*2$/.test(id) ? "Sui" : `Package_${id.slice(2)}`;
 
 /** Only the selected package's transitive dependencies belong in this export. */
 export function projectPackages(result: AnalyzeResult, rootId: string): PackageResult[] {
+  if (skipSystemDecompilation(rootId)) throw new Error("0x1～0x8 系统地址已跳过反编译，不导出源码项目");
   const byId = new Map(result.packages.map((p) => [p.id, p]));
   const seen = new Set<string>();
   const output: PackageResult[] = [];
   function visit(id: string) {
+    if (skipSystemDecompilation(id)) return;
     if (seen.has(id)) return;
     seen.add(id);
     const pkg = byId.get(id);
@@ -17,12 +20,11 @@ export function projectPackages(result: AnalyzeResult, rootId: string): PackageR
     }
     output.push(pkg);
     for (const dep of pkg.dependencies) {
+      if (skipSystemDecompilation(dep)) continue;
       const declared = pkg.dependencyVersions?.[dep];
       const resolved = byId.get(dep)?.version;
-      // Framework linkage can legitimately retain an older compatible version
-      // in a child; never silently substitute conflicting ordinary packages.
-      if (declared && declared !== resolved &&
-          !(/^0x0*[123]$/.test(dep) && resolved && BigInt(resolved) >= BigInt(declared))) {
+      // Never silently substitute conflicting ordinary packages.
+      if (declared && declared !== resolved) {
         throw new Error(`依赖 ${dep} 版本冲突：需要 ${declared}，解析为 ${resolved ?? "未知"}`);
       }
       visit(dep);
@@ -44,19 +46,24 @@ export function moveProjectFiles(
   const manifest: unknown[] = [];
   const ids = new Set(packages.map((p) => p.id));
   for (const pkg of packages) {
+    if (skipSystemDecompilation(pkg.id)) throw new Error("系统地址不应加入反编译任务");
     if (!/^0x[0-9a-f]{64}$/.test(pkg.id)) throw new Error("Invalid package path");
     const prefix = pkg.id === root.id ? "" : `dependencies/${pkg.id}/`;
-    const deps = pkg.dependencies.map((id) => {
+    const deps = pkg.dependencies.flatMap((id) => {
+      if (skipSystemDecompilation(id)) {
+        const declaration = systemDependency(id);
+        return declaration ? [declaration] : [];
+      }
       if (!ids.has(id)) throw new Error(`Missing dependency ${id}`);
       const path = pkg.id === root.id ? `dependencies/${id}` :
         id === root.id ? "../.." : `../${id}`;
       const alias = /^0x0*1$/.test(id) ? "std" : /^0x0*2$/.test(id) ? "sui" : packageName(id);
-      return `${alias} = { local = "${path}", rename-from = "${packageName(id)}" }`;
+      return [`${alias} = { local = "${path}", rename-from = "${packageName(id)}" }`];
     });
     files[`${prefix}Move.toml`] = [
       "# Reconstructed project; chain address is retained for audit builds.",
       "[package]", `name = "${packageName(pkg.id)}"`, 'edition = "2024"',
-      'implicit-dependencies = false', `published-at = "${pkg.id}"`,
+      `published-at = "${pkg.id}"`,
       "", "[dependencies]", ...deps, "",
     ].join("\n");
     const modules = pkg.modules.map((mod) => {
@@ -80,11 +87,17 @@ export function moveProjectFiles(
     });
     manifest.push({ packageId: pkg.id, version: pkg.version, digest: pkg.digest,
       dependencies: pkg.dependencies, declaredDependencyVersions: pkg.dependencyVersions,
+      skippedSystemDependencies: pkg.dependencies.filter(skipSystemDecompilation).map(id => ({
+        id, declaredVersion: pkg.dependencyVersions?.[id] ?? null,
+        buildResolution: /^0x0*[12]$/.test(id) ? "sui-cli-implicit" :
+          systemDependency(id) ? "sui-cli-system" : "excluded-address-not-a-configured-package",
+      })),
       resolvedDependencyVersions: Object.fromEntries(pkg.dependencies.map((id) =>
         [id, packages.find((p) => p.id === id)?.version])), modules });
   }
   files["manifest.json"] = JSON.stringify({ network, rootPackage: root.id,
     packageResolution: "exact-immutable-object-v1", generatedAt: new Date().toISOString(),
+    systemDependencyPolicy: "skip-0x1-through-0x8-use-official-toolchain",
     buildVerified: false, semanticEquivalenceVerified: false, packages: manifest }, null, 2);
   files["README.md"] = `# Reconstructed Move project
 
@@ -93,6 +106,12 @@ Root package: ${root.id} (${network}). All package IDs refer to exact chain obje
 Root modules are in sources/. Dependencies are separate local packages in
 dependencies/<package-id>/sources/, each with its own Move.toml. Merging them into
 the root sources/ would change package ownership and publication semantics.
+Addresses 0x1 through 0x8 are excluded from decompilation. std/sui are implicit
+official toolchain dependencies; 0x3 uses system = "sui_system". 0x5..0x8 are
+objects, not packages. No package mapping is invented for 0x4.
+The original linkage versions remain in manifest.json. Toolchain-resolved
+framework sources are NOT asserted to match those historical versions. Retain
+the generated Move.lock and verify dependency compatibility before deployment.
 
 Run locally with a compatible Sui CLI:
 

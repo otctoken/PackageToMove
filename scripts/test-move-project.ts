@@ -27,6 +27,16 @@ assert.ok(files[`dependencies/${dep.id}/sources/same_name.move`]);
 assert.match(files["Move.toml"], new RegExp(`local = "dependencies/${dep.id}"`));
 assert.match(files[`dependencies/${dep.id}/Move.toml`], new RegExp(`local = "../${shared.id}"`));
 assert.equal(JSON.parse(files["manifest.json"]).buildVerified, false);
+const withSystems = {...root, dependencies: [...root.dependencies, ...Array.from({length:8},(_,i)=>id(i+1))],
+  dependencyVersions: {[id(1)]: "25", [id(2)]: "57"}};
+const withoutSystemSources = projectPackages({...result, packages:[withSystems,dep,shared]},root.id);
+assert.equal(withoutSystemSources.length, 3);
+const systemFiles = moveProjectFiles("mainnet",withoutSystemSources,sources,metadata);
+assert.doesNotMatch(systemFiles["Move.toml"], /implicit-dependencies = false/);
+assert.match(systemFiles["Move.toml"], /sui_system = \{ system = "sui_system" \}/);
+assert.ok(!Object.keys(systemFiles).some(path=>path.startsWith(`dependencies/${id(1)}/`)));
+assert.equal(JSON.parse(systemFiles["manifest.json"]).packages[0].skippedSystemDependencies.length,8);
+assert.throws(()=>projectPackages(result,id(1)), /跳过/);
 root.dependencyVersions = {[dep.id]: "2"};
 assert.throws(()=>projectPackages(result,root.id), /版本冲突/);
 delete root.dependencyVersions;

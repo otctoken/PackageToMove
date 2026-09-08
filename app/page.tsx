@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { moveProjectFiles, projectPackages } from "@/lib/move-project";
+import { skipSystemDecompilation } from "@/lib/system-addresses";
 import type {
   AnalyzeResult,
   BytecodeVerification,
@@ -225,7 +226,7 @@ function DependencyPanel({
             <span className={`package-dot ${pkg.status}`} />
             <span className="package-row-copy">
               <strong>{pkg.depth === 0 ? "Root package" : compactAddress(pkg.id, 5)}</strong>
-              <small>{pkg.modules.length} modules · depth {pkg.depth}</small>
+              <small>{pkg.decompilationSkipped ? "系统地址 · 已跳过反编译" : `${pkg.modules.length} modules · depth ${pkg.depth}`}</small>
             </span>
             <ChevronDown size={15} className="row-chevron" />
           </button>
@@ -293,6 +294,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!result || !activePackage || !module || !sourceKey || fullSource) return;
+    if (skipSystemDecompilation(activePackage.id)) return;
     const controller = new AbortController();
     setDecompilingKey(sourceKey);
     setDecompileError("");
@@ -709,7 +711,7 @@ export default function Home() {
                   <button onClick={downloadCode}><Download size={15} /> Download</button>
                   <button
                     aria-label="Download reconstructed Move project and dependencies as ZIP"
-                    disabled={batchDownloading}
+                    disabled={batchDownloading || !!activePackage?.decompilationSkipped}
                     onClick={() => void downloadPackageSources()}
                     title="Download Move.toml, root sources and local dependency packages. Recompilation and semantic equivalence are not yet verified."
                   >

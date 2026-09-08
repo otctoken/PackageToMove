@@ -29,7 +29,10 @@ async function exactPackageTests() {
   let returnedAddress = id;
   let paginate = false;
   let drift = false;
+  let withSystems = false;
+  let fetches = 0;
   globalThis.fetch = async (_url, options) => {
+    fetches++;
     const { query, variables } = JSON.parse(String(options?.body));
     assert.match(query, /object\(address: \$address/);
     assert.match(query, /asMovePackage/);
@@ -37,7 +40,8 @@ async function exactPackageTests() {
     if (paginate && variables.after) assert.equal(variables.version, 1);
     const next = paginate && !variables.after;
     return Response.json({ data: { object: { package: {
-      address: returnedAddress, version: drift && variables.after ? 2 : 1, digest: "exact-object", linkage: [],
+      address: returnedAddress, version: drift && variables.after ? 2 : 1, digest: "exact-object",
+      linkage: withSystems ? Array.from({length:8},(_,i)=>({originalId:`0x${i+1}`,upgradedId:`0x${i+1}`,version:i===0?25:0})) : [],
       module: { name: "session", bytes: "AQID" },
       modules: { nodes: paginate ? [{name:next ? "ll" : "session", bytes:"AQID"}] :
         [{ name: "ll", bytes: "AQID" }, { name: "session", bytes: "AQID" }],
@@ -54,6 +58,15 @@ async function exactPackageTests() {
     await assert.rejects(analyzePackage(id,"mainnet"), /版本不匹配/);
     paginate = false;
     drift = false;
+    withSystems = true;
+    fetches = 0;
+    const skipped = await analyzePackage(id,"mainnet");
+    assert.equal(fetches,1);
+    assert.equal(skipped.packages.filter(p=>p.decompilationSkipped).length,8);
+    assert.deepEqual(skipped.warnings,[]);
+    await analyzePackage("0x2","mainnet");
+    assert.equal(fetches,1);
+    withSystems = false;
     returnedAddress = normalizePackageId("0x2db4bc4a188101d82f985cc2f77bc27f9f94f68911bbed2087c75d679f1e3d22");
     await assert.rejects(analyzePackage(id, "mainnet"), /地址不匹配/);
     await assert.rejects(getMoveModuleBytecode(id, "session", "mainnet"), /地址不匹配/);

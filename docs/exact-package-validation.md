@@ -1,5 +1,33 @@
 # Exact package validation (2026-09-08)
 
+## Follow-up: official system dependencies (supersedes full-framework export)
+
+Addresses 0x1 through 0x8 are now excluded from analysis traversal and all
+decompilation jobs. They remain visible as skipped metadata entries. Root and
+third-party source still undergo the same audit gate; skipped system sources
+cannot enter Download All. std/sui resolve implicitly via Sui CLI, and 0x3 is
+declared with `sui_system = { system = "sui_system" }`.
+
+The ac55 export now contains 7 files (2 root sources, 2 disassemblies, Move.toml,
+manifest.json and README.md). That actual exported project builds successfully
+using CLI 1.75.2. `sui move test` initially reports zero tests; after adding the
+locally authored `tests/fixtures/ac55-smoke.move` to the generated tests directory,
+all four tests pass. No deployment was attempted.
+
+The 0x2 v57 GraphQL linkage really returns 0x1 version 0. This is **not** a
+historical stdlib version pin: Sui's `MovePackage::new_system` intentionally sets
+system-to-system linkage versions to zero because only one system package
+version can be in use on a network at a time. The previous warning interpreted
+this sentinel as a normal dependency conflict. See [official implementation](https://github.com/MystenLabs/sui/blob/main/crates/sui-types/src/move_package.rs).
+
+Official dependency resolution is documented in [Move package management](https://docs.sui.io/develop/manage-packages/move-package-management).
+The generated Move.lock pins build dependencies, not a proof that their source
+matches a historical mainnet snapshot. For historical audits the chain bytecode
+and execution checkpoint remain authoritative. The archive still does not claim
+semantic equivalence or automatic republication compatibility.
+
+## Earlier full-framework experiment
+
 ## Reproduced wrong-package resolution
 
 Requested mainnet package:

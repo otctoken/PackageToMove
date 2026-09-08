@@ -82,6 +82,10 @@ async fn fetch_chain_module(request: &DecompileRequest) -> Result<(String, Vec<u
     }
 
     let package_id = normalize_package_id(&request.package_id)?;
+    if matches!(package_id.trim_start_matches("0x").trim_start_matches('0'),
+        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") {
+        return Err(invalid("System addresses 0x1 through 0x8 are excluded from decompilation"));
+    }
     let response = reqwest::Client::new()
         .post(graphql_endpoint(&request.network)?)
         .json(&json!({

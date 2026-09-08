@@ -1,6 +1,7 @@
 import { AnalyzeResult, Network, PackageResult } from "@/lib/types";
 import { decompileModule } from "@/lib/decompiler";
 import { createHash } from "node:crypto";
+import { skipSystemDecompilation } from "./system-addresses";
 
 const ENDPOINTS: Record<Network, string> = {
   mainnet:
@@ -228,22 +229,28 @@ export async function analyzePackage(
   while (queue.length) {
     const batch = queue.splice(0, 8);
     const results = await Promise.all(
-      batch.map(({ id, depth, version }) => fetchPackage(network, id, depth, version)),
+      batch.map(({ id, depth, version }): Promise<PackageResult> =>
+        skipSystemDecompilation(id) ? Promise.resolve({
+          id, shortId: shortId(id), depth, version: version ?? null,
+          digest: null, modules: [], dependencies: [], status: "ok",
+          decompilationSkipped: true,
+        }) : fetchPackage(network, id, depth, version)),
     );
     for (const result of results) {
       packages.push(result);
       if (result.warning) warnings.push(`${result.shortId}: ${result.warning}`);
       for (const dependency of result.dependencies) {
         const version = result.dependencyVersions?.[dependency];
-        if (version && versions.has(dependency) && versions.get(dependency) !== version) {
-          // Framework packages retain their IDs across protocol upgrades. A
-          // dependency's older framework linkage must not override the root's
-          // explicitly selected version. Keep both declared and resolved values
-          // in the export manifest instead of silently changing the root pin.
-          if (/^0x0*[123]$/.test(dependency) && Number(versions.get(dependency)) >= Number(version)) {
-            warnings.push(`框架 ${dependency}：保留根依赖版本 ${versions.get(dependency)}；${result.id} 的历史 linkage 为 ${version}`);
-            continue;
+        // Skipped system dependencies are metadata only. No traversal into
+        // framework linkage, historical version fetch, or decompiler call.
+        if (skipSystemDecompilation(dependency)) {
+          if (!seen.has(dependency)) {
+            seen.add(dependency);
+            queue.push({id: dependency, depth: result.depth + 1, version});
           }
+          continue;
+        }
+        if (version && versions.has(dependency) && versions.get(dependency) !== version) {
           warnings.push(`依赖 ${dependency} 存在版本冲突；保留首次解析版本 ${versions.get(dependency)}，请求版本 ${version}`);
           continue;
         }

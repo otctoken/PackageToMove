@@ -17,6 +17,7 @@ export type PackageResult = {
   modules: ModuleResult[];
   dependencies: string[];
   dependencyVersions?: Record<string, string>;
+  decompilationSkipped?: boolean;
   depth: number;
   status: "ok" | "partial" | "unavailable";
   warning?: string;
