@@ -65,8 +65,9 @@ export function moveProjectFiles(
       if (!ids.has(id)) throw new Error(`Missing dependency ${id}`);
       const path = pkg.id === root.id ? `dependencies/${id}` :
         id === root.id ? "../.." : `../${id}`;
-      const alias = /^0x0*1$/.test(id) ? "std" : /^0x0*2$/.test(id) ? "sui" : packageName(id);
-      return [`${alias} = { local = "${path}", rename-from = "${packageName(id)}" }`];
+      // Local dependencies use exactly their declared package name. The Move
+      // package manager rejects rename-from when it does not rename anything.
+      return [`${packageName(id)} = { local = "${path}" }`];
     });
     files[`${prefix}Move.toml`] = [
       "# Reconstructed project. See manifest.json for provenance and verification limits.",

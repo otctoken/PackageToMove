@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { moveProjectFiles, projectPackages } from "../lib/move-project";
 import type { AnalyzeResult, DecompileMetadata, PackageResult } from "../lib/types";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
 const id = (n: number) => `0x${n.toString(16).padStart(64, "0")}`;
 const pkg = (n: number, deps: number[]): PackageResult => ({ id:id(n), shortId:id(n), version:"1",
   digest:"fixture", status:"ok", depth:n===10?0:1, dependencies:deps.map(id),
@@ -12,7 +16,7 @@ assert.deepEqual(selected.map((p)=>p.id), [id(10),id(11),id(12)]);
 const sources: Record<string,string>={}; const metadata: Record<string,DecompileMetadata>={};
 for (const p of selected) {
   const key=`${p.id}::same_name`;
-  sources[key]=`module ${p.id}::same_name;`;
+  sources[key]=`module ${p.id}::same_name; public fun value(): u64 { 1 }`;
   metadata[key]={engine:"rust-move-decompiler", fallback:false, verification:{
     bytecodeSha256:"abc", knownInstructionCoverage:true, bytecodeVerified:true,
     controlFlowFullyStructured:true, auditWarnings:[],
@@ -35,6 +39,39 @@ assert.equal(fresh[`dependencies/${dep.id}/sources/same_name.move`], sources[`${
 assert.match(fresh[`dependencies/${dep.id}/Move.toml`], /published-at/);
 assert.equal(JSON.parse(fresh["manifest.json"]).publishVerified,false);
 assert.ok(fresh["verify.mjs"].includes("['build','test']"));
+for (const project of [files,fresh]) {
+  for (const [path,content] of Object.entries(project)) {
+    if (path.endsWith("Move.toml")) assert.doesNotMatch(content,/rename-from/);
+  }
+}
+// Optional real CLI regression: reproduce the old error, then build both modes.
+if (process.argv.includes("--build")) {
+  const workspace = mkdtempSync(join(tmpdir(),"move-manifest-regression-"));
+  function writeProject(folder:string, project:Record<string,string>) {
+    const directory = join(workspace,folder);
+    for (const [path,content] of Object.entries(project)) {
+      const target = join(directory,path);
+      mkdirSync(dirname(target),{recursive:true}); writeFileSync(target,content);
+    }
+    return directory;
+  }
+  function build(directory:string) {
+    return spawnSync("sui",["move","build","--path",".","--silence-warnings"],
+      {cwd:directory,encoding:"utf8",shell:process.platform==="win32",timeout:180000,maxBuffer:8*1024*1024});
+  }
+  const old = {...files, "Move.toml":files["Move.toml"].replace(
+    `local = "dependencies/${dep.id}"`,
+    `local = "dependencies/${dep.id}", rename-from = "Package_${dep.id.slice(2)}"`)};
+  const failed = build(writeProject("redundant",old));
+  assert.notEqual(failed.status,0);
+  assert.match((failed.stdout??"")+(failed.stderr??""),/unnecessary[\s\S]*rename-from|already named/);
+  for (const [mode,project] of [["audit",files],["new-package",fresh]] as const) {
+    const checked = build(writeProject(mode,project));
+    assert.equal(checked.status,0,(checked.stdout??"")+(checked.stderr??"")+String(checked.error??""));
+    console.log(`${mode}: actual Sui build passed`);
+  }
+  console.log(`Manifest regression artifacts: ${workspace}`);
+}
 const withSystems = {...root, dependencies: [...root.dependencies, ...Array.from({length:8},(_,i)=>id(i+1))],
   dependencyVersions: {[id(1)]: "25", [id(2)]: "57"}};
 const withoutSystemSources = projectPackages({...result, packages:[withSystems,dep,shared]},root.id);
