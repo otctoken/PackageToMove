@@ -248,7 +248,9 @@ fn trivial(map: &mut BTreeMap<RegId, Out::Exp>, triv: Trivial) -> Out::Exp {
         // call with multiple return values.
         Trivial::Register(reg_id) => map
             .remove(&reg_id.name)
-            .unwrap_or_else(|| Out::Exp::Variable(reg_id.to_string())),
+            // Display includes a debug type annotation ("reg_N : Type"), which
+            // is not a Move variable expression. Match the unpack/call binding.
+            .unwrap_or_else(|| Out::Exp::Variable(reg_id.name())),
         Trivial::Immediate(value) => Out::Exp::Value(value),
     }
 }

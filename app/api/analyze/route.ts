@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
     }
     const result = await analyzePackage(body.packageId, network);
     return NextResponse.json(result, {
-      headers: { "cache-control": "public, s-maxage=300, stale-while-revalidate=3600" },
+      headers: { "cache-control": "no-store" },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "分析失败，请稍后重试";

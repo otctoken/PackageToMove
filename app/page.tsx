@@ -25,6 +25,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { moveProjectFiles, projectPackages } from "@/lib/move-project";
 import type {
   AnalyzeResult,
   BytecodeVerification,
@@ -70,11 +71,13 @@ async function fetchVerifiedDecompile(
   module: string,
   network: Network,
   signal?: AbortSignal,
+  expectedHash?: string,
+  packageVersion?: string | null,
 ) {
   const response = await fetch("/api/decompile", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ packageId, module, network }),
+    body: JSON.stringify({ packageId, module, network, packageVersion: packageVersion == null ? null : Number(packageVersion) }),
     signal,
   });
   const responseText = await response.text();
@@ -101,6 +104,12 @@ async function fetchVerifiedDecompile(
     throw new Error(
       "Decompilation did not pass the global fail-closed audit gate",
     );
+  }
+  if (payload.packageId !== packageId || payload.module !== module || payload.network !== network) {
+    throw new Error("反编译响应与请求的网络、包地址或模块不一致");
+  }
+  if (!expectedHash || payload.verification.bytecodeSha256 !== expectedHash) {
+    throw new Error("反编译字节码哈希与已核对的模块清单不一致，请重新分析");
   }
   return payload;
 }
@@ -295,6 +304,8 @@ export default function Home() {
           module.name,
           result.network,
           controller.signal,
+          module.bytecodeSha256,
+          activePackage.version,
         );
         setFullSources((current) => ({
           ...current,
@@ -395,7 +406,14 @@ export default function Home() {
     if (!result || !activePackage || batchDownloading) return;
 
     const selectedPackage = activePackage;
-    const modules = selectedPackage.modules;
+    let packages: PackageResult[];
+    try {
+      packages = projectPackages(result, selectedPackage.id);
+    } catch (cause) {
+      setBatchDownloadError(cause instanceof Error ? cause.message : "依赖不完整");
+      return;
+    }
+    const modules = packages.flatMap((pkg) => pkg.modules.map((m) => ({ ...m, packageId: pkg.id, packageVersion: pkg.version })));
     if (!modules.length) {
       setBatchDownloadError("当前 Package 没有可下载的模块。");
       return;
@@ -414,7 +432,7 @@ export default function Home() {
     const worker = async () => {
       while (nextIndex < modules.length) {
         const item = modules[nextIndex++];
-        const key = `${selectedPackage.id}::${item.name}`;
+        const key = `${item.packageId}::${item.name}`;
         try {
           const cachedSource = fullSources[key];
           const cachedMetadata = decompileMetadata[key];
@@ -422,16 +440,20 @@ export default function Home() {
             cachedSource &&
             cachedMetadata &&
             passesAuditGate(cachedMetadata.verification)
+            && cachedMetadata.verification.bytecodeSha256 === item.bytecodeSha256
           ) {
-            sources[item.name] = cachedSource;
+            sources[key] = cachedSource;
             metadata[key] = cachedMetadata;
           } else {
             const payload = await fetchVerifiedDecompile(
-              selectedPackage.id,
+              item.packageId,
               item.name,
               result.network,
+              undefined,
+              item.bytecodeSha256,
+              item.packageVersion,
             );
-            sources[item.name] = payload.source;
+            sources[key] = payload.source;
             metadata[key] = {
               engine: payload.engine,
               fallback: false,
@@ -440,7 +462,7 @@ export default function Home() {
           }
         } catch (cause) {
           failures.push({
-            module: item.name,
+            module: key,
             message:
               cause instanceof Error ? cause.message : "Unknown decompilation error",
           });
@@ -459,12 +481,7 @@ export default function Home() {
         ),
       );
 
-      setFullSources((current) => ({ ...current, ...Object.fromEntries(
-        Object.entries(sources).map(([name, source]) => [
-          `${selectedPackage.id}::${name}`,
-          source,
-        ]),
-      ) }));
+      setFullSources((current) => ({ ...current, ...sources }));
       setDecompileMetadata((current) => ({ ...current, ...metadata }));
 
       if (failures.length > 0) {
@@ -480,35 +497,8 @@ export default function Home() {
       }
 
       const { strToU8, zipSync } = await import("fflate");
-      const files: Record<string, Uint8Array> = {};
-      const manifestModules = modules.map((item) => {
-        const key = `${selectedPackage.id}::${item.name}`;
-        const verification = metadata[key]?.verification ??
-          decompileMetadata[key]?.verification;
-        files[`${item.name}.move`] = strToU8(sources[item.name]);
-        return {
-          name: item.name,
-          file: `${item.name}.move`,
-          bytecodeSha256: verification?.bytecodeSha256,
-          bytecodeSize: verification?.bytecodeSize,
-          instructionCount: verification?.instructionCount,
-          auditPolicy: verification?.auditPolicy,
-          bytecodeVerified: verification?.bytecodeVerified,
-        };
-      });
-      files["manifest.json"] = strToU8(
-        JSON.stringify(
-          {
-            packageId: selectedPackage.id,
-            network: result.network,
-            generatedAt: new Date().toISOString(),
-            source: "sui-chain-bytecode",
-            modules: manifestModules,
-          },
-          null,
-          2,
-        ),
-      );
+      const project = moveProjectFiles(result.network, packages, sources, metadata);
+      const files = Object.fromEntries(Object.entries(project).map(([path, text]) => [path, strToU8(text)]));
 
       const archive = zipSync(files, { level: 6 });
       const blob = new Blob([archive], { type: "application/zip" });
@@ -710,7 +700,7 @@ export default function Home() {
                   <i className="verified">
                     <ShieldCheck size={13} />
                     {sourceMetadata?.verification.bytecodeVerified
-                      ? "RUST VERIFIED"
+                      ? "BYTECODE VERIFIED"
                       : "ON-CHAIN"}
                   </i>
                 </div>
@@ -718,10 +708,10 @@ export default function Home() {
                   <button onClick={copyCode}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button>
                   <button onClick={downloadCode}><Download size={15} /> Download</button>
                   <button
-                    aria-label="Download all verified decompiled modules as ZIP"
+                    aria-label="Download reconstructed Move project and dependencies as ZIP"
                     disabled={batchDownloading}
                     onClick={() => void downloadPackageSources()}
-                    title="Download every verified module in the selected Package"
+                    title="Download Move.toml, root sources and local dependency packages. Recompilation and semantic equivalence are not yet verified."
                   >
                     {batchDownloading
                       ? <LoaderCircle className="spin" size={15} />

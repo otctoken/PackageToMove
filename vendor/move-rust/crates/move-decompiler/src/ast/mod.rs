@@ -54,6 +54,7 @@ pub struct Function {
     pub name: Symbol,
     pub visibility: Visibility,
     pub is_entry: bool,
+    pub is_native: bool,
     /// Per type-parameter abilities (in declaration order). Type parameters are referred to in
     /// types as `Type::TypeParameter(index)` and rendered as `T{index}`.
     pub type_parameters: Vec<AbilitySet>,

@@ -242,6 +242,8 @@ fn function<S: SourceKind>(
         .unwrap_or_default();
     let visibility = compiled.map(|f| f.visibility).unwrap_or_default();
     let is_entry = compiled.map(|f| f.is_entry).unwrap_or(false);
+    // Verified non-native functions have at least a Ret/Abort instruction.
+    let is_native = compiled.map(|f| f.code().is_empty()).unwrap_or(false);
     let type_parameters = compiled
         .map(|f| f.type_parameters.clone())
         .unwrap_or_default();
@@ -273,6 +275,7 @@ fn function<S: SourceKind>(
         name,
         visibility,
         is_entry,
+        is_native,
         type_parameters,
         parameters,
         returns,

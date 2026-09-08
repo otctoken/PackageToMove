@@ -20,9 +20,15 @@ use indexmap::IndexMap;
 
 struct Context {
     constant_table: IndexMap<*const Constant<Symbol>, String>,
+    mutable_locals: std::collections::BTreeSet<String>,
 }
 
 impl Context {
+    fn binding(&self, name: &str) -> Doc {
+        if self.mutable_locals.contains(name) {
+            D::text(format!("mut {name}"))
+        } else { D::text(name) }
+    }
     fn get_constant(&self, c: &Constant<Symbol>) -> Doc {
         let key = c as *const _;
         match self.constant_table.get(&key) {
@@ -63,7 +69,7 @@ pub fn module<S: SourceKind>(
             .map(|(k, (name, _))| (*k, name.clone()))
             .collect();
 
-        Context { constant_table }
+        Context { constant_table, mutable_locals: Default::default() }
     };
 
     let crate::ast::Module {
@@ -79,6 +85,13 @@ pub fn module<S: SourceKind>(
         .concat(D::line())
         .concat(D::line());
 
+    // Vector instructions are represented as natives in bytecode. These compiler
+    // attributes restore their language-level meaning, only for canonical std.
+    let is_std_vector = pkg_name.trim_start_matches("0x").trim_start_matches('0') == "1"
+        && name.as_str() == "vector";
+    if is_std_vector {
+        doc = doc.concat(D::text("#[defines_primitive(vector)]")).concat(D::line());
+    }
     doc = doc
         .concat(D::text("module"))
         .concat_space(D::text(pkg_name))
@@ -87,6 +100,12 @@ pub fn module<S: SourceKind>(
         .concat(D::text(";"))
         .concat(D::line())
         .concat(D::line());
+
+    // Friend declarations are part of bytecode access control. Do not broaden
+    // public(friend) to public(package) just to satisfy a newer compiler.
+    for friend in &model_mod.compiled().friends {
+        doc = doc.concat(D::text(format!("friend {friend};"))).concat(D::line());
+    }
 
     if !uses.is_empty() || !type_uses.is_empty() {
         doc = doc
@@ -184,6 +203,14 @@ pub fn module<S: SourceKind>(
         let functions_doc = {
             let mut doc = D::nil();
             for fun in functions.values() {
+                if is_std_vector && fun.is_native {
+                    if matches!(fun.name.as_str(), "borrow" | "borrow_mut") {
+                        doc = doc.concat(D::text("#[syntax(index)]")).concat(D::line());
+                    }
+                    if matches!(fun.name.as_str(), "empty" | "length" | "borrow" | "borrow_mut" | "push_back" | "pop_back" | "destroy_empty" | "swap") {
+                        doc = doc.concat(D::text("#[bytecode_instruction]")).concat(D::line());
+                    }
+                }
                 let f_doc = function(&context, fun);
                 doc = doc.concat(f_doc).concat(D::line()).concat(D::line());
             }
@@ -195,8 +222,64 @@ pub fn module<S: SourceKind>(
     Ok(doc)
 }
 
+/// Move 2024 requires explicit mutable bindings. Collect from AST operations,
+/// never from source-text replacement, so literals and call order are untouched.
+fn collect_mutable_locals(e: &Exp, out: &mut std::collections::BTreeSet<String>) {
+    match e {
+        Exp::Assign(names, rhs) => {
+            out.extend(names.iter().cloned());
+            collect_mutable_locals(rhs, out);
+        }
+        Exp::Borrow(mutable, rhs) => {
+            if *mutable {
+                if let Exp::Variable(name) = rhs.as_ref() { out.insert(name.clone()); }
+            }
+            collect_mutable_locals(rhs, out);
+        }
+        Exp::Loop(_, e) | Exp::LetBind(_, e) | Exp::Abort(e) | Exp::Block(_, e)
+        | Exp::Unpack(_, _, e) | Exp::UnpackVariant(_, _, _, e) | Exp::VecUnpack(_, e) => collect_mutable_locals(e, out),
+        Exp::Seq(es) | Exp::Return(es) | Exp::Call(_, es)
+        | Exp::Primitive { args: es, .. } | Exp::Data { args: es, .. } => {
+            for e in es { collect_mutable_locals(e, out); }
+        }
+        Exp::While(_, c, b) => { collect_mutable_locals(c, out); collect_mutable_locals(b, out); }
+        Exp::IfElse(c, t, a) => {
+            collect_mutable_locals(c, out); collect_mutable_locals(t, out);
+            if let Some(a) = a.as_ref() { collect_mutable_locals(a, out); }
+        }
+        Exp::Switch(c, _, arms) => {
+            collect_mutable_locals(c, out);
+            for (_, a) in arms { collect_mutable_locals(a, out); }
+        }
+        Exp::Match(c, _, arms) => {
+            collect_mutable_locals(c, out);
+            for (_, _, a) in arms { collect_mutable_locals(a, out); }
+        }
+        Exp::MatchLit(c, arms) => {
+            collect_mutable_locals(c, out);
+            for (_, a) in arms { collect_mutable_locals(a, out); }
+        }
+        Exp::Unstructured(nodes) => {
+            for n in nodes {
+                if let ast::UnstructuredNode::Labeled(_, b) | ast::UnstructuredNode::Statement(b) = n {
+                    collect_mutable_locals(b, out);
+                }
+            }
+        }
+        Exp::Break(_) | Exp::Continue(_) | Exp::Declare(_) | Exp::Value(_)
+        | Exp::Variable(_) | Exp::Constant(_) => {}
+    }
+}
+
 fn function(context: &Context, fun: &Function) -> Doc {
-    let header = fun_header_doc(fun);
+    let mut mutable_locals = Default::default();
+    collect_mutable_locals(&fun.code, &mut mutable_locals);
+    let function_context = Context { constant_table: context.constant_table.clone(), mutable_locals };
+    let context = &function_context;
+    let header = fun_header_doc(context, fun);
+    if fun.is_native {
+        return D::text("native ").concat(header).concat(D::text(";"));
+    }
     let code = &fun.code;
 
     // Notice for input blocks the structurer received but never emitted. Prepending it
@@ -267,11 +350,12 @@ fn peek_block(exp: &Exp) -> &Exp {
 // in the same shape as `move_model_2::pretty_printer::fun_header` etc. - the difference is the
 // types they read have been through `collect_uses`.
 
-fn fun_header_doc(fun: &Function) -> Doc {
+fn fun_header_doc(context: &Context, fun: &Function) -> Doc {
     let Function {
         name,
         visibility,
         is_entry,
+        is_native: _,
         type_parameters,
         parameters,
         returns,
@@ -314,7 +398,7 @@ fn fun_header_doc(fun: &Function) -> Doc {
     let params_doc = {
         // Parameter names follow the same `l{i}` scheme as `term_reconstruction::local_name`.
         let parts = parameters.iter().enumerate().map(|(i, ty)| {
-            D::text(format!("l{i}"))
+            context.binding(&format!("l{i}"))
                 .concat(D::text(":"))
                 .group()
                 .concat_space(type_doc(ty))
@@ -661,9 +745,9 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
             Exp::LetBind(lhs, rhs) => {
                 let lhs_doc = match &lhs[..] {
                     [] => D::text("_"),
-                    [x] => D::text(x),
+                    [x] => context.binding(x),
                     _ => D::parens(D::intersperse(
-                        lhs.iter().map(D::text),
+                        lhs.iter().map(|x| context.binding(x)),
                         D::text(",").concat(D::space()),
                     ))
                     .group(),
@@ -676,9 +760,9 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
             Exp::Declare(lhs) => {
                 let lhs_doc = match &lhs[..] {
                     [] => D::text("_"),
-                    [x] => D::text(x),
+                    [x] => context.binding(x),
                     _ => D::parens(D::intersperse(
-                        lhs.iter().map(D::text),
+                        lhs.iter().map(|x| context.binding(x)),
                         D::text(",").concat(D::space()),
                     ))
                     .group(),
@@ -754,7 +838,7 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
                             let field_doc = Doc::intersperse(
                                 fields
                                     .iter()
-                                    .map(|(sym, name)| D::text(format!("{sym}: {name}"))),
+                                    .map(|(sym, name)| D::text(format!("{sym}: ")).concat(context.binding(name))),
                                 D::text(", "),
                             );
                             pat = pat
@@ -787,7 +871,7 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
             Exp::Primitive { op, args } => primitive_op_doc(context, op, args),
             Exp::Data { op, args } => data_op_doc(context, op, args),
             Exp::Unpack(struct_ty, items, exp) => {
-                let items_doc = fields(items);
+                let items_doc = fields(context, items);
                 D::text("let")
                     .concat_space(D::text(format!("{struct_ty}")))
                     .concat_space(items_doc)
@@ -804,7 +888,7 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
                 }
             }
             Exp::UnpackVariant(unpack_kind, (enum_ty, variant), items, exp) => {
-                let items_doc = fields(items);
+                let items_doc = fields(context, items);
                 let rhs_prefix = match unpack_kind {
                     ast::UnpackKind::Value => "",
                     ast::UnpackKind::ImmRef => "&",
@@ -929,7 +1013,7 @@ where
 }
 
 /// Render a list of fields (name, type) separated by commas and enclosed in braces.
-fn fields(fields: &[(Symbol, String)]) -> Doc {
+fn fields(context: &Context, fields: &[(Symbol, String)]) -> Doc {
     if fields.is_empty() {
         return D::nil().braces();
     };
@@ -937,11 +1021,15 @@ fn fields(fields: &[(Symbol, String)]) -> Doc {
         fields.iter().map(|(name, ty)| {
             D::text(name.as_str())
                 .concat(D::text(":"))
-                .concat_space(D::text(ty))
+                .concat_space(context.binding(ty))
         }),
-        D::text(",").concat(D::space()),
+        D::text(",").concat(D::softline()),
     );
-    D::space().concat(doc).concat(D::space()).braces()
+    D::text("{")
+        .concat(D::softline().concat(doc).nest(4))
+        .concat(D::softline())
+        .concat(D::text("}"))
+        .group()
 }
 
 fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
@@ -1186,8 +1274,8 @@ fn primitive_op_doc(context: &Context, op: &PrimitiveOp, args: &[Exp]) -> Doc {
     };
     let cast = |ty: &str| {
         let operand = match &args[0] {
-            Exp::Primitive { .. } => exp(context, &args[0]).parens(),
-            _ => exp(context, &args[0]),
+            Exp::Variable(_) | Exp::Value(_) | Exp::Constant(_) => exp(context, &args[0]),
+            _ => exp(context, &args[0]).parens(),
         };
         operand
             .concat_space(D::text("as"))
@@ -1241,6 +1329,7 @@ mod primitive_op_tests {
     fn render(e: &Exp) -> String {
         let context = Context {
             constant_table: IndexMap::new(),
+            mutable_locals: Default::default(),
         };
         exp(&context, e).render(100)
     }
@@ -1292,7 +1381,7 @@ fn value(v: &Value) -> Doc {
         Value::U64(u) => D::text(u.to_string()).concat(D::text("u64")),
         Value::U128(u) => D::text(u.to_string()).concat(D::text("u128")),
         Value::U256(u) => D::text(u.to_string()).concat(D::text("u256")),
-        Value::Address(a) => D::text(format!("@{:X}", a)),
+        Value::Address(a) => D::text(format!("@0x{:X}", a)),
         Value::Vector(values) => D::text("vector[")
             .concat(D::intersperse(
                 values.iter().map(value),

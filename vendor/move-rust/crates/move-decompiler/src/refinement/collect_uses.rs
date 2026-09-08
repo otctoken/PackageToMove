@@ -314,7 +314,9 @@ fn shortest_alias(
     let my = stripped[i].as_str();
     let min_len = min_distinguishing_prefix_len(i, stripped).max(1);
     for len in min_len..=my.len() {
-        let candidate: Symbol = format!("x{}_{}", &my[..len], name).into();
+        // Datatype aliases must retain an uppercase initial in Move 2024.
+        let prefix = if name.as_str().starts_with(|c: char| c.is_ascii_uppercase()) { "X" } else { "x" };
+        let candidate: Symbol = format!("{prefix}{}_{}", &my[..len], name).into();
         if !used.contains(&candidate) {
             return Some(candidate);
         }

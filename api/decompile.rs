@@ -8,8 +8,11 @@ use sui_scope_rust::{decode_graphql_module_response, decompile_verified_bytecode
 use vercel_runtime::{Error, Request, run, service_fn};
 
 const MODULE_QUERY: &str = r#"
-    query ModuleBytecode($address: SuiAddress!, $module: String!) {
-        package(address: $address) {
+    query ModuleBytecode($address: SuiAddress!, $module: String!, $version: UInt53) {
+        object(address: $address, version: $version) {
+          package: asMovePackage {
+            address
+            version
             module(name: $module) {
                 name
                 bytes
@@ -19,6 +22,7 @@ const MODULE_QUERY: &str = r#"
                 upgradedId
                 version
             }
+          }
         }
     }
 "#;
@@ -26,6 +30,7 @@ const MODULE_QUERY: &str = r#"
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DecompileRequest {
+    package_version: Option<u64>,
     package_id: String,
     module: String,
     #[serde(default = "default_network")]
@@ -83,6 +88,7 @@ async fn fetch_chain_module(request: &DecompileRequest) -> Result<(String, Vec<u
             "query": MODULE_QUERY,
             "variables": {
                 "address": package_id,
+                "version": request.package_version,
                 "module": request.module
             }
         }))
@@ -92,8 +98,13 @@ async fn fetch_chain_module(request: &DecompileRequest) -> Result<(String, Vec<u
         .json::<Value>()
         .await?;
 
+    if let Some(version) = request.package_version {
+        if response["data"]["object"]["package"]["version"].as_u64() != Some(version) {
+            return Err(invalid("Package version mismatch"));
+        }
+    }
     let (bytecode, linkage) =
-        decode_graphql_module_response(response, &request.module).map_err(invalid)?;
+        decode_graphql_module_response(response, &package_id, &request.module).map_err(invalid)?;
     Ok((package_id, bytecode, linkage))
 }
 
@@ -109,6 +120,7 @@ async fn handler(request: Request) -> Result<Value, Error> {
 
     Ok(json!({
         "packageId": package_id,
+        "packageVersion": input.package_version,
         "module": input.module,
         "network": input.network,
         "source": source,

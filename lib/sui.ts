@@ -1,5 +1,6 @@
 import { AnalyzeResult, Network, PackageResult } from "@/lib/types";
 import { decompileModule } from "@/lib/decompiler";
+import { createHash } from "node:crypto";
 
 const ENDPOINTS: Record<Network, string> = {
   mainnet:
@@ -11,8 +12,9 @@ const ENDPOINTS: Record<Network, string> = {
 };
 
 const GRAPHQL_QUERY = `
-  query Package($address: SuiAddress!, $after: String) {
-    package(address: $address) {
+  query Package($address: SuiAddress!, $after: String, $version: UInt53) {
+    object(address: $address, version: $version) {
+      package: asMovePackage {
       address
       version
       digest
@@ -22,8 +24,9 @@ const GRAPHQL_QUERY = `
         version
       }
       modules(first: 5, after: $after) {
-        nodes { name disassembly }
+        nodes { name bytes disassembly }
         pageInfo { hasNextPage endCursor }
+      }
       }
     }
   }
@@ -59,10 +62,11 @@ async function postJson<T>(url: string, body: unknown, timeoutMs = 18_000): Prom
   }
 }
 
-async function fetchGraphql(network: Network, id: string) {
+async function fetchGraphql(network: Network, id: string, version?: string) {
   type GraphResponse = {
     data?: {
-      package?: {
+      object?: { package?: {
+        address?: string;
         version?: string | number;
         digest?: string;
         linkage?: Array<{
@@ -71,35 +75,58 @@ async function fetchGraphql(network: Network, id: string) {
           version: string | number;
         }>;
         modules?: {
-          nodes?: Array<{ name: string; disassembly?: string }>;
+          nodes?: Array<{ name: string; bytes?: string; disassembly?: string }>;
           pageInfo?: { hasNextPage?: boolean; endCursor?: string };
         };
-      };
+      } };
     };
     errors?: Array<{ message: string }>;
   };
-  const modules: Array<{ name: string; disassembly?: string }> = [];
+  const modules: Array<{ name: string; bytes?: string; disassembly?: string }> = [];
   let cursor: string | null = null;
-  let pkg: NonNullable<NonNullable<GraphResponse["data"]>["package"]> | undefined;
+  let pinnedVersion = version;
+  let pinnedDigest: string | undefined;
+  let pkg: NonNullable<NonNullable<NonNullable<GraphResponse["data"]>["object"]>["package"]> | undefined;
   do {
     const result: GraphResponse = await postJson(ENDPOINTS[network], {
       query: GRAPHQL_QUERY,
-      variables: { address: id, after: cursor },
+      variables: { address: id, after: cursor, version: pinnedVersion == null ? null : Number(pinnedVersion) },
     });
     if (result.errors?.length) throw new Error(result.errors[0].message);
-    pkg = result.data?.package;
+    pkg = result.data?.object?.package;
     if (!pkg) {
       throw new Error("该地址不是 Move Package，或在所选网络中不存在");
     }
+    if (!pkg.address || normalizePackageId(pkg.address) !== id) {
+      throw new Error("Package 地址不匹配：拒绝用升级包替代请求的不可变包");
+    }
+    if (pkg.version == null) throw new Error("Package 缺少版本，无法固定链上快照");
+    if (pinnedVersion != null && String(pkg.version) !== pinnedVersion) throw new Error("Package 版本不匹配");
+    pinnedVersion = String(pkg.version);
+    if (pinnedDigest && pkg.digest !== pinnedDigest) throw new Error("Package 分页摘要不匹配");
+    pinnedDigest = pkg.digest;
     if (!Array.isArray(pkg.linkage)) {
       throw new Error("Sui GraphQL 未返回 Package linkage，无法可靠分析依赖");
     }
     const connection = pkg.modules;
-    modules.push(...(connection?.nodes ?? []));
+    if (!connection?.nodes || !connection.pageInfo) {
+      throw new Error("Package 模块清单不完整");
+    }
+    for (const module of connection.nodes) {
+      if (!module.bytes) throw new Error(`模块 ${module.name} 缺少链上字节码，拒绝生成清单`);
+      if (modules.some((existing) => existing.name === module.name)) {
+        throw new Error("Package 模块分页重复");
+      }
+      modules.push(module);
+    }
+    if (connection.pageInfo.hasNextPage &&
+        (!connection.pageInfo.endCursor || connection.pageInfo.endCursor === cursor)) {
+      throw new Error("Package 模块分页游标无效");
+    }
     cursor = connection?.pageInfo?.hasNextPage
       ? connection.pageInfo.endCursor ?? null
       : null;
-  } while (cursor && modules.length < 150);
+  } while (cursor);
   return {
     version: pkg.version == null ? null : String(pkg.version),
     digest: pkg.digest ?? null,
@@ -126,10 +153,11 @@ async function fetchPackage(
   network: Network,
   id: string,
   depth: number,
+  version?: string,
 ): Promise<PackageResult> {
   let graphData;
   try {
-    graphData = await fetchGraphql(network, id);
+    graphData = await fetchGraphql(network, id, version);
   } catch (error) {
     return {
       id,
@@ -158,6 +186,9 @@ async function fetchPackage(
       );
       return {
         name,
+        bytecodeSha256: createHash("sha256").update(Buffer.from(
+          graphData.modules.find((module) => module.name === name)?.bytes ?? "", "base64",
+        )).digest("hex"),
         source: decompiled.source,
         disassembly: bytecode,
         functionCount: decompiled.functionCount,
@@ -174,6 +205,7 @@ async function fetchPackage(
     digest: graphData.digest,
     modules,
     dependencies,
+    dependencyVersions: Object.fromEntries(graphData.linkage.map((e) => [normalizePackageId(e.upgradedId), String(e.version)])),
     depth,
     status: "ok",
   };
@@ -188,26 +220,41 @@ export async function analyzePackage(
   const seen = new Set<string>([rootPackage]);
   const packages: PackageResult[] = [];
   const warnings: string[] = [];
-  let queue: Array<{ id: string; depth: number }> = [{ id: rootPackage, depth: 0 }];
+  let queue: Array<{ id: string; depth: number; version?: string }> = [{ id: rootPackage, depth: 0 }];
+  const versions = new Map<string, string>();
   const maxPackages = 120;
   let truncated = false;
 
   while (queue.length) {
     const batch = queue.splice(0, 8);
     const results = await Promise.all(
-      batch.map(({ id, depth }) => fetchPackage(network, id, depth)),
+      batch.map(({ id, depth, version }) => fetchPackage(network, id, depth, version)),
     );
     for (const result of results) {
       packages.push(result);
       if (result.warning) warnings.push(`${result.shortId}: ${result.warning}`);
       for (const dependency of result.dependencies) {
+        const version = result.dependencyVersions?.[dependency];
+        if (version && versions.has(dependency) && versions.get(dependency) !== version) {
+          // Framework packages retain their IDs across protocol upgrades. A
+          // dependency's older framework linkage must not override the root's
+          // explicitly selected version. Keep both declared and resolved values
+          // in the export manifest instead of silently changing the root pin.
+          if (/^0x0*[123]$/.test(dependency) && Number(versions.get(dependency)) >= Number(version)) {
+            warnings.push(`框架 ${dependency}：保留根依赖版本 ${versions.get(dependency)}；${result.id} 的历史 linkage 为 ${version}`);
+            continue;
+          }
+          warnings.push(`依赖 ${dependency} 存在版本冲突；保留首次解析版本 ${versions.get(dependency)}，请求版本 ${version}`);
+          continue;
+        }
+        if (version) versions.set(dependency, version);
         if (seen.has(dependency)) continue;
         if (seen.size >= maxPackages) {
           truncated = true;
           continue;
         }
         seen.add(dependency);
-        queue.push({ id: dependency, depth: result.depth + 1 });
+        queue.push({ id: dependency, depth: result.depth + 1, version });
       }
     }
   }

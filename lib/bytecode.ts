@@ -11,11 +11,15 @@ const GRAPHQL_ENDPOINTS: Record<Network, string> = {
 };
 
 const MODULE_QUERY = `
-  query ModuleBytecode($address: SuiAddress!, $module: String!) {
-    package(address: $address) {
+  query ModuleBytecode($address: SuiAddress!, $module: String!, $version: UInt53) {
+    object(address: $address, version: $version) {
+      package: asMovePackage {
+      address
+      version
       module(name: $module) {
         name
         bytes
+      }
       }
     }
   }
@@ -44,28 +48,35 @@ async function fetchModuleBytecode(
   packageId: string,
   moduleName: string,
   network: Network,
+  version?: string | null,
 ) {
   const response = await postJson<{
     data?: {
-      package?: {
+      object?: { package?: {
+        address?: string;
+        version?: number;
         module?: {
           name: string;
           bytes?: string;
         };
-      };
+      } };
     };
     errors?: Array<{ message: string }>;
   }>(
     GRAPHQL_ENDPOINTS[network],
     {
       query: MODULE_QUERY,
-      variables: { address: packageId, module: moduleName },
+      variables: { address: packageId, module: moduleName, version: version == null ? null : Number(version) },
     },
     20_000,
   );
   if (response.errors?.length) throw new Error(response.errors[0].message);
-  const pkg = response.data?.package;
+  const pkg = response.data?.object?.package;
   if (!pkg) throw new Error("该地址不是 Move Package，或在所选网络中不存在");
+  if (!pkg.address || normalizePackageId(pkg.address) !== packageId) {
+    throw new Error("Package 地址不匹配：拒绝用升级包替代请求的不可变包");
+  }
+  if (version != null && String(pkg.version) !== version) throw new Error("Package 版本不匹配");
   const module = pkg.module;
   if (!module || module.name !== moduleName) {
     throw new Error(`Package 中不存在模块 ${moduleName}`);
@@ -79,12 +90,13 @@ export async function getMoveModuleBytecode(
   inputPackageId: string,
   moduleName: string,
   network: Network,
+  version?: string | null,
 ) {
   const packageId = normalizePackageId(inputPackageId);
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(moduleName)) {
     throw new Error("无效的 Move 模块名");
   }
-  const bytecode = await fetchModuleBytecode(packageId, moduleName, network);
+  const bytecode = await fetchModuleBytecode(packageId, moduleName, network, version);
   return {
     packageId,
     module: moduleName,

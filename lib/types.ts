@@ -4,6 +4,7 @@ export type ModuleResult = {
   name: string;
   source: string;
   disassembly: string | null;
+  bytecodeSha256?: string;
   functionCount: number;
   structCount: number;
 };
@@ -15,6 +16,7 @@ export type PackageResult = {
   digest: string | null;
   modules: ModuleResult[];
   dependencies: string[];
+  dependencyVersions?: Record<string, string>;
   depth: number;
   status: "ok" | "partial" | "unavailable";
   warning?: string;
@@ -61,6 +63,7 @@ export type DecompileMetadata = {
 };
 
 export type RustDecompileResponse = {
+  packageVersion?: number;
   packageId: string;
   module: string;
   network: Network;

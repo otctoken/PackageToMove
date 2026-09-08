@@ -11,6 +11,7 @@ export async function POST(request: NextRequest) {
       packageId?: string;
       module?: string;
       network?: Network;
+      packageVersion?: string;
     };
     const network = body.network ?? "mainnet";
     if (!["mainnet", "testnet", "devnet"].includes(network)) {
@@ -26,10 +27,11 @@ export async function POST(request: NextRequest) {
       body.packageId,
       body.module,
       network,
+      body.packageVersion,
     );
     return NextResponse.json(result, {
       headers: {
-        "cache-control": "public, s-maxage=86400, stale-while-revalidate=604800",
+        "cache-control": "no-store",
       },
     });
   } catch (error) {

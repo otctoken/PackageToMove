@@ -39,11 +39,17 @@ struct GraphQlEnvelope {
 
 #[derive(Deserialize)]
 struct GraphQlData {
+    object: Option<GraphQlObject>,
+}
+
+#[derive(Deserialize)]
+struct GraphQlObject {
     package: Option<GraphQlPackage>,
 }
 
 #[derive(Deserialize)]
 struct GraphQlPackage {
+    address: String,
     module: Option<GraphQlModule>,
     #[serde(default)]
     linkage: Value,
@@ -62,6 +68,7 @@ struct GraphQlError {
 
 pub fn decode_graphql_module_response(
     response: Value,
+    expected_package: &str,
     expected_module: &str,
 ) -> Result<(Vec<u8>, Value), String> {
     let response: GraphQlEnvelope = serde_json::from_value(response)
@@ -71,8 +78,12 @@ pub fn decode_graphql_module_response(
     }
     let package = response
         .data
-        .and_then(|data| data.package)
+        .and_then(|data| data.object)
+        .and_then(|object| object.package)
         .ok_or_else(|| "Address is not a Move package or does not exist".to_owned())?;
+    if package.address != expected_package {
+        return Err("Package address mismatch: refusing substituted upgrade bytecode".to_owned());
+    }
     let module = package
         .module
         .ok_or_else(|| format!("Package does not contain module {expected_module}"))?;
@@ -363,6 +374,22 @@ fn inspect_bytecode(
         .count();
 
     let mut audit_warnings = Vec::new();
+    // Names are preserved in Move bytecode. Equal function totals alone would
+    // not catch an omitted function replaced by an unrelated one.
+    let expected_names: std::collections::BTreeSet<String> = module.function_defs().iter()
+        .map(|f| module.identifier_at(module.function_handle_at(f.function).name).to_string())
+        .collect();
+    let rendered_names: std::collections::BTreeSet<String> = source.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .filter_map(|line| line.split_once("fun "))
+        .map(|(_, rest)| rest.trim_start().chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect())
+        .collect();
+    if expected_names != rendered_names {
+        audit_warnings.push(format!("function symbols mismatch: missing {:?}; extra {:?}",
+            expected_names.difference(&rendered_names).collect::<Vec<_>>(),
+            rendered_names.difference(&expected_names).collect::<Vec<_>>()));
+    }
     let coverage_checks = [
         (
             "function",
@@ -559,7 +586,8 @@ mod tests {
     fn graphql_module_response_preserves_exact_bytes_and_linkage() {
         let response = json!({
             "data": {
-                "package": {
+                "object": { "package": {
+                    "address": "0x1",
                     "module": {
                         "name": "math",
                         "bytes": "AQIDBA=="
@@ -569,12 +597,12 @@ mod tests {
                         "upgradedId": "0x1",
                         "version": 25
                     }]
-                }
+                } }
             }
         });
 
         let (bytes, linkage) =
-            decode_graphql_module_response(response, "math").expect("response must decode");
+            decode_graphql_module_response(response, "0x1", "math").expect("response must decode");
         assert_eq!(bytes, [1, 2, 3, 4]);
         assert_eq!(linkage[0]["version"], 25);
     }
@@ -586,9 +614,48 @@ mod tests {
             "errors": [{ "message": "upstream unavailable" }]
         });
 
-        let error = decode_graphql_module_response(response, "math")
+        let error = decode_graphql_module_response(response, "0x1", "math")
             .expect_err("GraphQL errors must not produce bytecode");
         assert_eq!(error, "Sui GraphQL error: upstream unavailable");
+    }
+
+    #[test]
+    fn graphql_rejects_upgrade_substitution() {
+        let response = json!({"data": {"object": {"package": {
+            "address": "0x2", "module": {"name": "session", "bytes": "AQID"}
+        }}}});
+        assert!(decode_graphql_module_response(response, "0x1", "session")
+            .unwrap_err().contains("Package address mismatch"));
+    }
+
+    #[test]
+    fn equal_function_counts_do_not_hide_wrong_symbols() {
+        let bytes = BASE64.decode(TREASURY_MODULE).unwrap();
+        let module = CompiledModule::deserialize_with_defaults(&bytes).unwrap();
+        let (source, _) = decompile_verified_bytecode(&bytes).unwrap();
+        let changed = source.replace("fun destroy(", "fun unrelated(");
+        assert_ne!(source, changed);
+        assert!(inspect_bytecode(&module, &bytes, &changed).audit_warnings.iter()
+            .any(|warning| warning.contains("function symbols mismatch")));
+    }
+
+    #[test]
+    fn exact_ac55_has_only_original_modules_and_valid_register_names() {
+        let fixture: Value = serde_json::from_str(include_str!("../tests/fixtures/exact-ac55.json")).unwrap();
+        let modules = fixture["data"]["object"]["package"]["modules"]["nodes"].as_array().unwrap();
+        assert_eq!(modules.iter().map(|m| m["name"].as_str().unwrap()).collect::<Vec<_>>(), ["ll", "session"]);
+        for m in modules {
+            let bytes = BASE64.decode(m["bytes"].as_str().unwrap()).unwrap();
+            let (source, verification) = decompile_verified_bytecode(&bytes).unwrap();
+            assert!(verification.audit_warnings.is_empty());
+            assert!(!source.contains("reg_1 :"));
+            if m["name"] == "session" {
+                assert_eq!(verification.function_count, 20);
+                assert!(!source.contains("fun start_grid"));
+                assert!(source.contains("let mut l11"));
+                assert!(!source.contains("reg_15 :"));
+            } else { assert_eq!(verification.function_count, 8); }
+        }
     }
 
     #[test]
