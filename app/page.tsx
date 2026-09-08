@@ -25,7 +25,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { moveProjectFiles, projectPackages } from "@/lib/move-project";
+import { moveProjectFiles, projectPackages, type ExportMode } from "@/lib/move-project";
 import { skipSystemDecompilation } from "@/lib/system-addresses";
 import type {
   AnalyzeResult,
@@ -247,6 +247,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [activePackageId, setActivePackageId] = useState("");
+  const [exportMode, setExportMode] = useState<ExportMode>("audit");
   const [activeModule, setActiveModule] = useState("");
   const [activeTab, setActiveTab] = useState<"source" | "bytecode">("source");
   const [filter, setFilter] = useState("");
@@ -499,7 +500,7 @@ export default function Home() {
       }
 
       const { strToU8, zipSync } = await import("fflate");
-      const project = moveProjectFiles(result.network, packages, sources, metadata);
+      const project = moveProjectFiles(result.network, packages, sources, metadata, exportMode);
       const files = Object.fromEntries(Object.entries(project).map(([path, text]) => [path, strToU8(text)]));
 
       const archive = zipSync(files, { level: 6 });
@@ -507,7 +508,7 @@ export default function Home() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `${selectedPackage.id}-${result.network}-decompiled.zip`;
+      anchor.download = `${selectedPackage.id}-${result.network}-${exportMode}.zip`;
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (cause) {
@@ -709,6 +710,11 @@ export default function Home() {
                 <div className="code-actions">
                   <button onClick={copyCode}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button>
                   <button onClick={downloadCode}><Download size={15} /> Download</button>
+                  <select aria-label="Export mode" value={exportMode} disabled={batchDownloading}
+                    onChange={event => setExportMode(event.target.value as ExportMode)}>
+                    <option value="new-package">新包构建版（待验证）</option>
+                    <option value="audit">原地址审计版</option>
+                  </select>
                   <button
                     aria-label="Download reconstructed Move project and dependencies as ZIP"
                     disabled={batchDownloading || !!activePackage?.decompilationSkipped}

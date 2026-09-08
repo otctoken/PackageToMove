@@ -27,6 +27,14 @@ assert.ok(files[`dependencies/${dep.id}/sources/same_name.move`]);
 assert.match(files["Move.toml"], new RegExp(`local = "dependencies/${dep.id}"`));
 assert.match(files[`dependencies/${dep.id}/Move.toml`], new RegExp(`local = "../${shared.id}"`));
 assert.equal(JSON.parse(files["manifest.json"]).buildVerified, false);
+const fresh = moveProjectFiles("mainnet",selected,sources,metadata,"new-package");
+assert.doesNotMatch(fresh["Move.toml"], /published-at/);
+assert.match(fresh["sources/same_name.move"], /module Package_/);
+assert.equal(fresh["audit/sources/same_name.move"], sources[`${root.id}::same_name`]);
+assert.equal(fresh[`dependencies/${dep.id}/sources/same_name.move`], sources[`${dep.id}::same_name`]);
+assert.match(fresh[`dependencies/${dep.id}/Move.toml`], /published-at/);
+assert.equal(JSON.parse(fresh["manifest.json"]).publishVerified,false);
+assert.ok(fresh["verify.mjs"].includes("['build','test']"));
 const withSystems = {...root, dependencies: [...root.dependencies, ...Array.from({length:8},(_,i)=>id(i+1))],
   dependencyVersions: {[id(1)]: "25", [id(2)]: "57"}};
 const withoutSystemSources = projectPackages({...result, packages:[withSystems,dep,shared]},root.id);

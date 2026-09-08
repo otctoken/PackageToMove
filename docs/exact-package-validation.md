@@ -1,5 +1,22 @@
 # Exact package validation (2026-09-08)
 
+## Reconstructed project versus original project
+
+The default archive remains the original-address audit view. An optional new-package
+view removes the root's published-at and relocates only paths to root-owned modules
+using the package-name address. Address literals, strings, comments, and third-party
+source are preserved; original root source is also saved under audit/sources/.
+The new-package ac55 sample builds successfully with CLI 1.75.2 and the generic
+verify.mjs runner; its default test run has zero cases, not verified business tests.
+No publication was attempted. The lexer has regressions for identity mismatches,
+comments, strings, grouped imports, and external modules.
+
+Every download includes verify.mjs for local build/test logs and an input-hashed
+validation.json. No manifest claims recovery of original tests, Move.lock, original
+compiler settings, semantic equivalence, or publication readiness. Original-address
+and relocated views must not be confused. Dependency publication metadata and
+historical framework matching remain separate work, not inferred from compilation.
+
 ## Follow-up: official system dependencies (supersedes full-framework export)
 
 Addresses 0x1 through 0x8 are now excluded from analysis traversal and all

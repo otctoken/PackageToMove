@@ -10,7 +10,8 @@ import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 async function main() {
-  const [id, directory] = process.argv.slice(2);
+  const [id, directory, mode = "audit"] = process.argv.slice(2);
+  if (mode !== "audit" && mode !== "new-package") throw new Error("Expected audit or new-package mode");
   if (!id || !directory) throw new Error("Expected package ID and new output directory");
   const output = resolve(directory);
   if (existsSync(output)) throw new Error("Output directory already exists; choose a new directory");
@@ -36,7 +37,7 @@ async function main() {
       metadata[key] = {engine:"rust-move-decompiler", fallback:false, verification:m.verification};
     }
   }
-  const files = moveProjectFiles("mainnet", packages, sources, metadata);
+  const files = moveProjectFiles("mainnet", packages, sources, metadata, mode);
   for (const [path, text] of Object.entries(files)) {
     const target = resolve(output, path);
     if (!target.startsWith(output + "/") && !target.startsWith(output + "\\")) throw new Error("Invalid path");
