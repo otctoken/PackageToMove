@@ -1,7 +1,7 @@
 type Token = { text: string; start: number; end: number };
 
 // Retain source spans. Never rewrite comments, strings, or address-valued data.
-function tokens(source: string): Token[] {
+export function tokens(source: string): Token[] {
   const out: Token[] = [];
   let i = 0;
   while (i < source.length) {

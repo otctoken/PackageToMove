@@ -200,7 +200,9 @@ pub fn exp(
             // expression itself can still have effects (for example `coin::burn` returns
             // the burned amount, which callers commonly discard). Dropping the entire
             // register here silently erased those calls from the reconstructed source.
-            SI::Drop(reg) => seq.push(trivial(&mut map, Trivial::Register(reg))),
+            SI::Drop(reg) => seq.push(Out::Exp::LetBind(
+                vec![], Box::new(trivial(&mut map, Trivial::Register(reg))),
+            )),
             SI::Nop | SI::NotImplemented(_) => continue,
         }
     }

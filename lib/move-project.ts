@@ -2,6 +2,8 @@ import type { AnalyzeResult, DecompileMetadata, PackageResult } from "./types";
 import { skipSystemDecompilation, systemDependency } from "./system-addresses";
 import { relocateMove, rootModuleIdentities } from "./relocate-move";
 import { projectVerifier } from "./project-verifier";
+import { adaptFriendSyntax } from "./friend-compatibility";
+import { moveAclReader } from "./move-acl-reader";
 
 export type ExportMode = "audit" | "new-package";
 
@@ -91,11 +93,19 @@ export function moveProjectFiles(
       }
       const file = `${prefix}sources/${mod.name}.move`;
       const relocated = newPackage && pkg.id === root.id;
-      files[file] = relocated ? relocateMove(source, rootIdentities, packageName(root.id)) : source;
-      const auditSourceFile = relocated ? `audit/sources/${mod.name}.move` : file;
-      if (relocated) files[auditSourceFile] = source;
+      const compatibility = adaptFriendSyntax(source);
+      const buildSource = compatibility.source;
+      files[file] = relocated ? relocateMove(buildSource, rootIdentities, packageName(root.id)) : buildSource;
+      if (compatibility.changed) files[file] = '// BUILD ADAPTER: audit source and exact friend ACL are retained in audit/ and manifest.json.\n' + files[file];
+      const auditSourceFile = `${prefix}audit/sources/${mod.name}.move`;
+      files[auditSourceFile] = source;
+      const buildIdentity = (id: string) => relocated && rootIdentities.has(id) ?
+        `0x${'0'.repeat(64)}::${id.split('::')[1]}` : id;
       if (mod.disassembly) files[`${prefix}bytecode/${mod.name}.mv.disasm`] = mod.disassembly;
-      return { name: mod.name, file, auditSourceFile, relocated, verificationAppliesTo: "auditSourceFile", verification };
+      return { name: mod.name, file, auditSourceFile, relocated,
+        friendSyntaxAdapted:compatibility.changed, compiledModuleId:buildIdentity(compatibility.moduleId),
+        expectedCompiledFriends:compatibility.expectedFriends.map(buildIdentity).sort(),
+        verificationAppliesTo: "auditSourceFile", verification };
     });
     manifest.push({ packageId: pkg.id, version: pkg.version, digest: pkg.digest,
       dependencies: pkg.dependencies, declaredDependencyVersions: pkg.dependencyVersions,
@@ -135,6 +145,14 @@ Their publication metadata/linkage must be validated before root publication.` :
 Root modules are in sources/. Dependencies are separate local packages in
 dependencies/<package-id>/sources/, each with its own Move.toml. Merging them into
 the root sources/ would change package ownership and publication semantics.
+
+FRIEND COMPATIBILITY: where bytecode contains friend access, sources/ contains an
+explicitly marked 2024 BUILD ADAPTER using public(package). The unmodified audit
+view stays in audit/sources/ (and dependencies/<id>/audit/sources/). Consult each
+module's auditSourceFile in manifest.json. Do NOT assume these permissions are
+equivalent: verify.mjs compares EVERY recompiled module's friend list against the
+original list, failing on additions, removals, or missing modules. Only that check
+can establish friend-table agreement for this exact build, not full equivalence.
 Addresses 0x1 through 0x8 are excluded from decompilation. std/sui are implicit
 official toolchain dependencies; 0x3 uses system = "sui_system". 0x5..0x8 are
 objects, not packages. No package mapping is invented for 0x4.
@@ -146,7 +164,7 @@ Run locally with a compatible Sui CLI:
 
     node verify.mjs
 
-This runs sui move build and sui move test, writes build.log/test.log and
+This runs sui move build, exact friend-table comparison, and sui move test; it writes build.log/test.log and
 validation.json, and exits nonzero on failure. It NEVER publishes or upgrades.
 Add business tests under tests/. Zero tests do not establish correct behavior.
 Validation results apply only to the hashed local inputs, not future edits.
@@ -161,5 +179,6 @@ package/type identity. Before deploying, review compiler output,
 dependency linkage, object compatibility and test results. No transaction is sent.
 `;
   files["verify.mjs"] = projectVerifier;
+  files["move-acl.mjs"] = moveAclReader;
   return files;
 }

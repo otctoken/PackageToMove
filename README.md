@@ -22,6 +22,11 @@ Download All 默认保留链上地址（原地址审计版）。可选“新包�
 输出日志及 `validation.json`，失败会返回非零退出码；不会发送交易。
 “测试命令成功但用例数为零”不代表业务测试通过，构建成功也不证明逻辑等价。
 
+涉及 `friend` 与 2024 语法混用时，`sources/` 为明确标注的构建适配副本，
+未改动的审计视图保存在每个模块的 `auditSourceFile` 路径。`verify.mjs` 会
+逐模块比较重编译 friend 列表，增删或缺失均失败；不能直接认为
+`public(package)` 与 `public(friend)` 等价。详见 [efbfd 回归记录](docs/efbfd-regression.md)。
+
 - Mainnet / Testnet / Devnet
 - 递归解析直接及传递 Package 依赖
 - 展示模块、结构体、公开函数和内部函数

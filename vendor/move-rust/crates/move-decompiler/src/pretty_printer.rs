@@ -312,7 +312,11 @@ fn function(context: &Context, fun: &Function) -> Doc {
         (Exp::Seq(_), None) => header.concat_space(exp(context, code)),
         (_, None) => header
             .concat_space(Doc::text("{"))
-            .concat(Doc::nest(Doc::line().concat(exp(context, code)), 4))
+            .concat(Doc::nest(Doc::line().concat(exp(context, code)).concat(
+                if matches!(inner, Exp::LetBind(_, _) | Exp::Assign(_, _) | Exp::Declare(_)) {
+                    Doc::text(";")
+                } else { Doc::nil() }
+            ), 4))
             .concat(Doc::line())
             .concat(Doc::text("}")),
         // Notice present: we always wrap in our own braces so the notice can sit at the
@@ -830,10 +834,10 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
                     .concat_space(D::parens(recur(context, subject)))
                     .concat_space(braces_block(arms_doc))
             }
-            Exp::Match(subject, _enum_ty, arms) => {
+            Exp::Match(subject, enum_ty, arms) => {
                 let arms_doc = Doc::intersperse(
                     arms.iter().map(|(variant, fields, body)| {
-                        let mut pat = D::text(variant.as_str());
+                        let mut pat = D::text(format!("{enum_ty}::{variant}"));
                         if !fields.is_empty() {
                             let field_doc = Doc::intersperse(
                                 fields
@@ -1124,7 +1128,7 @@ fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
             let enum_name = variant.enum_.name;
             let variant_name = variant.variant.name;
             D::text(format!("{enum_name}::{variant_name}")).concat_space(if fields.is_empty() {
-                D::nil().braces()
+                D::nil()
             } else {
                 D::space()
                     .concat(D::intersperse(

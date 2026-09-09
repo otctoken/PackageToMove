@@ -659,6 +659,25 @@ mod tests {
     }
 
     #[test]
+    fn efbfd_discard_and_enum_regressions() {
+        for fixture in [include_str!("../tests/fixtures/efbfd-root.json"), include_str!("../tests/fixtures/efbfd-dependency.json")] {
+            let value: Value = serde_json::from_str(fixture).unwrap();
+            for node in value["data"]["object"]["package"]["modules"]["nodes"].as_array().unwrap() {
+                let name = node["name"].as_str().unwrap();
+                if !["channel", "fee_collector", "set", "vaa", "state"].contains(&name) { continue; }
+                let bytes = BASE64.decode(node["bytes"].as_str().unwrap()).unwrap();
+                let (source, verification) = decompile_verified_bytecode(&bytes).unwrap();
+                assert!(verification.audit_warnings.is_empty());
+                if name == "fee_collector" { assert!(source.contains("let _ = x2_balance::join")); }
+                if name == "channel" {
+                    assert!(source.contains("Channel::RealTime =>"));
+                    assert!(!source.contains("Channel::RealTime {}"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn range_fixture_is_verified_and_decompiled_from_exact_bytecode() {
         let (source, verification) =
             decompile_verified_bytecode(RANGE_MODULE).expect("range fixture must decompile");
