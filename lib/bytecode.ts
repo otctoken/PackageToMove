@@ -1,5 +1,6 @@
 import { Network } from "@/lib/types";
 import { normalizePackageId } from "@/lib/sui";
+import { postJsonResponse } from "./http-json";
 
 const GRAPHQL_ENDPOINTS: Record<Network, string> = {
   mainnet:
@@ -26,22 +27,7 @@ const MODULE_QUERY = `
 `;
 
 async function postJson<T>(url: string, body: unknown, timeoutMs: number): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-      cache: "no-store",
-    });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`Sui 节点返回 HTTP ${response.status}`);
-    return JSON.parse(text) as T;
-  } finally {
-    clearTimeout(timeout);
-  }
+  return postJsonResponse<T>(url, body, "Sui GraphQL", undefined, timeoutMs);
 }
 
 async function fetchModuleBytecode(

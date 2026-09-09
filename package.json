@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "tsc --noEmit",
-    "test": "tsx scripts/test-decompiler.ts && tsx scripts/test-sui.ts && tsx scripts/test-move-project.ts && tsx scripts/test-relocate-move.ts && tsx scripts/test-friend-compatibility.ts",
+    "test": "tsx scripts/test-decompiler.ts && tsx scripts/test-sui.ts && tsx scripts/test-move-project.ts && tsx scripts/test-relocate-move.ts && tsx scripts/test-friend-compatibility.ts && tsx scripts/test-analysis-client.ts",
     "test:roundtrip": "tsx scripts/test-efbfd-roundtrip.ts"
   },
   "engines": {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { analyzePackage, dependenciesFromLinkage, normalizePackageId } from "../lib/sui";
+import { analyzePackage, dependenciesFromLinkage, getPackagePage, normalizePackageId } from "../lib/sui";
 import { getMoveModuleBytecode } from "../lib/bytecode";
 
 const root = normalizePackageId(
@@ -53,6 +53,17 @@ async function exactPackageTests() {
     assert.deepEqual(result.packages[0].modules.map((m) => m.name), ["ll", "session"]);
     assert.equal((await getMoveModuleBytecode(id, "session", "mainnet")).bytecode, "AQID");
     paginate = true;
+    fetches = 0;
+    const firstPage = await getPackagePage(id, "mainnet");
+    assert.equal(fetches, 1, 'One upstream request per page invocation');
+    assert.equal(firstPage.nextCursor, 'page2');
+    assert.deepEqual(firstPage.modules.map(m => m.name), ['ll']);
+    const secondPage = await getPackagePage(id, "mainnet", '1', 'page2');
+    assert.equal(fetches, 2);
+    assert.equal(secondPage.nextCursor, null);
+    assert.deepEqual(secondPage.modules.map(m => m.name), ['session']);
+    await assert.rejects(getPackagePage(id, "mainnet", undefined, 'page2'), /固定版本/);
+    await assert.rejects(getPackagePage(id, "mainnet", '0'), /版本无效/);
     assert.deepEqual((await analyzePackage(id,"mainnet")).packages[0].modules.map(m=>m.name), ["ll","session"]);
     drift = true;
     await assert.rejects(analyzePackage(id,"mainnet"), /版本不匹配/);

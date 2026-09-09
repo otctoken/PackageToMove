@@ -24,7 +24,9 @@ import {
   Sparkles,
   TerminalSquare,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { analyzeInPages } from "@/lib/analyze-client";
+import { postJsonResponse } from "@/lib/http-json";
 import { moveProjectFiles, projectPackages, type ExportMode } from "@/lib/move-project";
 import { skipSystemDecompilation } from "@/lib/system-addresses";
 import type {
@@ -75,26 +77,10 @@ async function fetchVerifiedDecompile(
   expectedHash?: string,
   packageVersion?: string | null,
 ) {
-  const response = await fetch("/api/decompile", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ packageId, module, network, packageVersion: packageVersion == null ? null : Number(packageVersion) }),
-    signal,
-  });
-  const responseText = await response.text();
-  let payload: RustDecompileResponse | { error?: string };
-  try {
-    payload = JSON.parse(responseText) as
-      | RustDecompileResponse
-      | { error?: string };
-  } catch {
-    throw new Error(
-      response.ok
-        ? "Rust decompiler returned an invalid response"
-        : responseText.slice(0, 500) || "Rust decompiler is unavailable",
-    );
-  }
-  if (!response.ok || !("source" in payload)) {
+  const payload = await postJsonResponse<RustDecompileResponse | { error?: string }>("/api/decompile",
+    { packageId, module, network, packageVersion: packageVersion == null ? null : Number(packageVersion) },
+    `反编译 ${module}`, signal, 65_000);
+  if (!("source" in payload)) {
     throw new Error(
       "error" in payload && payload.error
         ? payload.error
@@ -244,6 +230,9 @@ export default function Home() {
   const [packageId, setPackageId] = useState("");
   const [network, setNetwork] = useState<Network>("mainnet");
   const [loading, setLoading] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState({ completed: 0, discovered: 1 });
+  const analysisController = useRef<AbortController | null>(null);
+  useEffect(() => () => analysisController.current?.abort(), []);
   const [error, setError] = useState("");
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [activePackageId, setActivePackageId] = useState("");
@@ -342,7 +331,7 @@ export default function Home() {
         setDecompilingKey((current) => (current === sourceKey ? "" : current));
       });
     return () => controller.abort();
-  }, [activePackage, decompileRetry, fullSource, module, result, sourceKey]);
+  }, [activePackage, decompileRetry, fullSource, module, result?.network, sourceKey]);
 
   async function analyze(event?: FormEvent, override?: string) {
     event?.preventDefault();
@@ -352,34 +341,44 @@ export default function Home() {
       return;
     }
     setLoading(true);
+    analysisController.current?.abort();
+    const controller = new AbortController();
+    analysisController.current = controller;
+    setAnalysisProgress({ completed: 0, discovered: 1 });
     setError("");
     setResult(null);
+    setFullSources({});
+    setDecompileMetadata({});
+    setDecompileError("");
+    setBatchDownloadError("");
     try {
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ packageId: id, network }),
+      let first = true;
+      const data = await analyzeInPages(id, network, {
+        signal: controller.signal,
+        onProgress: ({ completed, discovered, result: partial }) => {
+          if (controller.signal.aborted) return;
+          setAnalysisProgress({ completed, discovered });
+          setResult(partial);
+          if (first) {
+            first = false;
+            setActivePackageId(partial.rootPackage);
+            setActiveModule(partial.packages.find(p => p.id === partial.rootPackage)?.modules[0]?.name ?? "");
+          }
+        },
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "分析失败");
-      const data = payload as AnalyzeResult;
+      if (controller.signal.aborted) return;
       setResult(data);
-      setFullSources({});
-      setDecompileMetadata({});
-      setDecompileError("");
       setDecompileRetry(0);
       setBatchDownloadError("");
       setBatchDownloadProgress({ completed: 0, total: 0 });
-      setActivePackageId(data.rootPackage);
-      const root = data.packages.find((pkg) => pkg.id === data.rootPackage);
-      setActiveModule(root?.modules[0]?.name ?? "");
       window.requestAnimationFrame(() =>
         document.getElementById("results")?.scrollIntoView({ behavior: "smooth" }),
       );
     } catch (cause) {
+      if (controller.signal.aborted) return;
       setError(cause instanceof Error ? cause.message : "分析失败，请稍后重试");
     } finally {
-      setLoading(false);
+      if (analysisController.current === controller) setLoading(false);
     }
   }
 
@@ -406,7 +405,7 @@ export default function Home() {
   }
 
   async function downloadPackageSources() {
-    if (!result || !activePackage || batchDownloading) return;
+    if (!result || !activePackage || batchDownloading || loading) return;
 
     const selectedPackage = activePackage;
     let packages: PackageResult[];
@@ -603,7 +602,7 @@ export default function Home() {
           <div className="loader-rings"><span /><span /><Braces size={24} /></div>
           <span className="eyebrow">RESOLVING PACKAGE GRAPH</span>
           <h2>正在沿着链上依赖向下追踪</h2>
-          <p>通过 GraphQL 读取模块、反汇编字节码并重建可读签名…</p>
+          <p>已读取 {analysisProgress.completed}/{analysisProgress.discovered} 个 Package；按页读取链上模块，主包就绪后即可查看。</p>
           <div className="loading-bar"><i /></div>
         </section>
       )}
@@ -614,7 +613,7 @@ export default function Home() {
         <section className="results" id="results">
           <div className="result-summary">
             <div className="summary-title">
-              <span className="eyebrow"><Activity size={13} /> ANALYSIS COMPLETE</span>
+              <span className="eyebrow"><Activity size={13} /> {loading ? "LOADING DEPENDENCIES" : "ANALYSIS COMPLETE"}</span>
               <h2>Package intelligence</h2>
               <div className="root-address">
                 <code>{compactAddress(result.rootPackage, 12)}</code>
@@ -630,11 +629,11 @@ export default function Home() {
             </div>
           </div>
 
-          {(result.warnings.length > 0 || result.stats.truncated) && (
+          {(result.warnings.length > 0 || (!loading && result.stats.truncated)) && (
             <div className="warning-strip">
               <CircleAlert size={16} />
               <span>
-                {result.stats.truncated
+                {!loading && result.stats.truncated
                   ? "依赖超过 120 个，结果已安全截断。"
                   : result.warnings[0]}
               </span>
@@ -717,7 +716,7 @@ export default function Home() {
                   </select>
                   <button
                     aria-label="Download reconstructed Move project and dependencies as ZIP"
-                    disabled={batchDownloading || !!activePackage?.decompilationSkipped}
+                    disabled={loading || batchDownloading || !!activePackage?.decompilationSkipped}
                     onClick={() => void downloadPackageSources()}
                     title="Download Move.toml, root sources and local dependency packages. Recompilation and semantic equivalence are not yet verified."
                   >

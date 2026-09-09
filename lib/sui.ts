@@ -2,6 +2,7 @@ import { AnalyzeResult, Network, PackageResult } from "@/lib/types";
 import { decompileModule } from "@/lib/decompiler";
 import { createHash } from "node:crypto";
 import { skipSystemDecompilation } from "./system-addresses";
+import { postJsonResponse } from "./http-json";
 
 const ENDPOINTS: Record<Network, string> = {
   mainnet:
@@ -45,25 +46,8 @@ function shortId(id: string) {
   return `${id.slice(0, 8)}…${id.slice(-6)}`;
 }
 
-async function postJson<T>(url: string, body: unknown, timeoutMs = 18_000): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error(`上游节点返回 HTTP ${response.status}`);
-    return (await response.json()) as T;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function fetchGraphql(network: Network, id: string, version?: string) {
+type PageOptions = { after?: string | null; singlePage?: boolean; signal?: AbortSignal };
+async function fetchGraphql(network: Network, id: string, version?: string, options: PageOptions = {}) {
   type GraphResponse = {
     data?: {
       object?: { package?: {
@@ -84,15 +68,15 @@ async function fetchGraphql(network: Network, id: string, version?: string) {
     errors?: Array<{ message: string }>;
   };
   const modules: Array<{ name: string; bytes?: string; disassembly?: string }> = [];
-  let cursor: string | null = null;
+  let cursor: string | null = options.after ?? null;
   let pinnedVersion = version;
   let pinnedDigest: string | undefined;
   let pkg: NonNullable<NonNullable<NonNullable<GraphResponse["data"]>["object"]>["package"]> | undefined;
   do {
-    const result: GraphResponse = await postJson(ENDPOINTS[network], {
+    const result: GraphResponse = await postJsonResponse(ENDPOINTS[network], {
       query: GRAPHQL_QUERY,
       variables: { address: id, after: cursor, version: pinnedVersion == null ? null : Number(pinnedVersion) },
-    });
+    }, "Sui GraphQL", options.signal, 18_000);
     if (result.errors?.length) throw new Error(result.errors[0].message);
     pkg = result.data?.object?.package;
     if (!pkg) {
@@ -127,12 +111,14 @@ async function fetchGraphql(network: Network, id: string, version?: string) {
     cursor = connection?.pageInfo?.hasNextPage
       ? connection.pageInfo.endCursor ?? null
       : null;
+    if (options.singlePage) break;
   } while (cursor);
   return {
     version: pkg.version == null ? null : String(pkg.version),
     digest: pkg.digest ?? null,
     modules,
     linkage: pkg.linkage,
+    nextCursor: cursor,
   };
 }
 
@@ -155,10 +141,11 @@ async function fetchPackage(
   id: string,
   depth: number,
   version?: string,
-): Promise<PackageResult> {
+  options: PageOptions = {},
+): Promise<PackageResult & { nextCursor?: string | null }> {
   let graphData;
   try {
-    graphData = await fetchGraphql(network, id, version);
+    graphData = await fetchGraphql(network, id, version, options);
   } catch (error) {
     return {
       id,
@@ -209,7 +196,23 @@ async function fetchPackage(
     dependencyVersions: Object.fromEntries(graphData.linkage.map((e) => [normalizePackageId(e.upgradedId), String(e.version)])),
     depth,
     status: "ok",
+    ...(options.singlePage ? { nextCursor: graphData.nextCursor } : {}),
   };
+}
+
+/** One upstream page per invocation; callers must join pages by exact identity. */
+export async function getPackagePage(input: string, network: Network, version?: string,
+  after?: string | null, signal?: AbortSignal) {
+  const id = normalizePackageId(input);
+  if (version != null && (!/^[1-9][0-9]*$/.test(version) || !Number.isSafeInteger(Number(version)))) {
+    throw new Error("Package 版本无效");
+  }
+  if (after != null && (typeof after !== 'string' || !after || after.length > 2048 || !version)) {
+    throw new Error("分页必须提供有效游标和固定版本");
+  }
+  if (skipSystemDecompilation(id)) return { id, shortId: shortId(id), depth: 0, version: version ?? null,
+    digest: null, modules: [], dependencies: [], status: "ok" as const, decompilationSkipped: true, nextCursor: null };
+  return fetchPackage(network, id, 0, version, { after, singlePage: true, signal });
 }
 
 export async function analyzePackage(
