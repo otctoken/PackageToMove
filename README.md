@@ -58,6 +58,20 @@ cargo test --lib
 cargo check --target x86_64-unknown-linux-gnu --bin decompile
 ```
 
+真实 Move 重编译回归（另需 Sui CLI，不包含在快速 `npm test` 中）：
+
+```sh
+cargo build --bin verify_package --bin compare_project
+npm run test:roundtrip
+```
+
+该回归对 efbfd 主包及普通依赖的 295 个函数逐项检查，输出原始/重编译字节码哈希和
+逐函数指令诊断。已修复引用赋值临时变量内联导致的调用顺序反转。
+当前结果为 200 个规范化指令相同、95 个限定指令模型匹配。
+通用求值顺序保护会保留必要的中间值，防止读取或调用被延后到写入/其他调用之后。
+实验性模型不证明 gas、历史框架实现或新包地址迁移等价，不放宽生产下载准入。
+详见 [56 项差异逐项复核](docs/efbfd-instruction-review.md)。
+
 ## 重新构建 WASM
 
 修订后的 Zig 源码保存在 `vendor/move-decompiler-zig`。使用 Zig 0.15.x：

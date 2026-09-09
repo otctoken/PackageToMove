@@ -495,7 +495,7 @@ export default function Home() {
         const remainder =
           failures.length > 5 ? `；另有 ${failures.length - 5} 个模块失败` : "";
         throw new Error(
-          `${failures.length}/${modules.length} 个模块未通过审计，已取消 ZIP 下载。${details}${remainder}`,
+          `${failures.length}/${modules.length} 个模块未通过基础覆盖校验，已取消 ZIP 下载。${details}${remainder}`,
         );
       }
 
@@ -700,7 +700,7 @@ export default function Home() {
                 <div className="file-title">
                   <span className="file-icon"><Braces size={15} /></span>
                   <span><strong>{module?.name ?? "module"}</strong>.move</span>
-                  <i className="verified">
+                  <i className="verified" title="此标识仅验证链上输入字节码，不证明反编译源码逻辑等价">
                     <ShieldCheck size={13} />
                     {sourceMetadata?.verification.bytecodeVerified
                       ? "BYTECODE VERIFIED"
@@ -792,6 +792,12 @@ export default function Home() {
                     </span>
                   </div>
                 )}
+              {activeTab === "source" && fullSource && (
+                <div className="decompile-progress" role="note">
+                  <CircleAlert size={14} />
+                  基础覆盖校验不等于逻辑等价验证。审计前仍需逐函数对照链上指令及重编译结果。
+                </div>
+              )}
               <SourceView code={visibleCode} />
               <div className="code-status">
                 <span>

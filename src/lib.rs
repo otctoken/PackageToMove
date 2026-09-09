@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use tempfile::TempDir;
 
+pub mod body_compare;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BytecodeVerification {
@@ -664,7 +666,7 @@ mod tests {
             let value: Value = serde_json::from_str(fixture).unwrap();
             for node in value["data"]["object"]["package"]["modules"]["nodes"].as_array().unwrap() {
                 let name = node["name"].as_str().unwrap();
-                if !["channel", "fee_collector", "set", "vaa", "state"].contains(&name) { continue; }
+                if !["channel", "fee_collector", "set", "vaa", "state", "package_utils"].contains(&name) { continue; }
                 let bytes = BASE64.decode(node["bytes"].as_str().unwrap()).unwrap();
                 let (source, verification) = decompile_verified_bytecode(&bytes).unwrap();
                 assert!(verification.audit_warnings.is_empty());
@@ -672,6 +674,12 @@ mod tests {
                 if name == "channel" {
                     assert!(source.contains("Channel::RealTime =>"));
                     assert!(!source.contains("Channel::RealTime {}"));
+                }
+                if name == "package_utils" {
+                    let body=source.split("fun set_commited_package(").nth(1).unwrap().split("\n}").next().unwrap();
+                    let binding=body.lines().find(|line|line.contains(" = dynamic_field::borrow_mut")).expect("Keep effectful LHS reference evaluation before RHS call").trim();
+                    let name=binding.strip_prefix("let ").unwrap().split(" = ").next().unwrap();
+                    assert!(body.contains(&format!("*(&mut {name}.package) = x2_package::upgrade_package(l1)")));
                 }
             }
         }
@@ -703,7 +711,12 @@ mod tests {
         assert!(source.contains("abort 13836748378316996621u64"));
         assert!(source.contains("loop {"));
         assert!(source.contains("*(&mut l14.min_stake) = l1"));
-        assert!(source.contains("is_new: !(l12)"));
+        // The negation may be captured to preserve the original evaluation point.
+        if !source.contains("is_new: !(l12)") {
+            let binding=source.lines().find(|line|line.contains(" = !(l12);")).unwrap().trim();
+            let name=binding.strip_prefix("let ").unwrap().split(" = ").next().unwrap();
+            assert!(source.contains(&format!("is_new: {name}")));
+        }
         assert!(source.contains("type_name::with_defining_ids<T0>()"));
         assert!(source.contains("core::assert_is_manager<Range>"));
         assert!(

@@ -21,8 +21,9 @@
 
 use crate::{
     ast::Exp,
-    refinement::{Refine, liveness::NameCounts},
+    refinement::{liveness::NameCounts, Refine},
 };
+use move_stackless_bytecode_2::ast::DataOp;
 
 pub fn refine(exp: &mut Exp) -> bool {
     let counts = NameCounts::analyze(exp);
@@ -135,6 +136,13 @@ fn head_ref(exp: &Exp) -> Option<&Exp> {
         Exp::LetBind(_, rhs) | Exp::Assign(_, rhs) => Some(rhs),
         // Multi-arg constructs: leftmost arg.
         Exp::Return(items) | Exp::Call(_, items) => items.first(),
+        // AST WriteRef stores [reference, value], but Move evaluates the RHS
+        // value BEFORE the assignment target. Inlining into reference here can
+        // move a dynamic-field borrow past an effectful/aborting RHS call.
+        Exp::Data {
+            op: DataOp::WriteRef,
+            args,
+        } => args.get(1),
         Exp::Primitive { args, .. } | Exp::Data { args, .. } => args.first(),
         // Control flow: the condition / subject is what's evaluated first.
         Exp::IfElse(cond, _, _) => Some(cond),
@@ -171,6 +179,10 @@ fn head_mut(exp: &mut Exp) -> Option<&mut Exp> {
         | Exp::Block(_, e) => Some(e),
         Exp::LetBind(_, rhs) | Exp::Assign(_, rhs) => Some(rhs),
         Exp::Return(items) | Exp::Call(_, items) => items.first_mut(),
+        Exp::Data {
+            op: DataOp::WriteRef,
+            args,
+        } => args.get_mut(1),
         Exp::Primitive { args, .. } | Exp::Data { args, .. } => args.first_mut(),
         Exp::IfElse(cond, _, _) => Some(cond),
         Exp::Switch(subj, _, _) => Some(subj),

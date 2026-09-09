@@ -1,5 +1,14 @@
 # efbfd audit-project regression (2026-09-09)
 
+Follow-up: the 56 remaining differences have now been investigated; one call-order
+reconstruction defect was fixed. See [the per-function instruction review](efbfd-instruction-review.md).
+The counts below record the earlier baseline, not the current result. Current:
+200 normalized-identical functions, 95 matched under an experimental restricted
+instruction model, zero unmatched in this exact regression. This is not a universal
+or independently verified semantic-equivalence proof.
+The intermediate assignment-only fix had 241 identical + 54 model-matched;
+subsequent general evaluation-order protection retains more temporaries.
+
 Input: user-provided audit ZIP for mainnet
 `0xefbfd064480777699fd9c557a5804d72ace7bc82661fdc8d1f1a44ea6d92ee10` v2,
 plus dependency `0x5306f64e312b581766351c07af79c72fcb1cd25147157fdc2f8ad76de9a3fb6a` v1.

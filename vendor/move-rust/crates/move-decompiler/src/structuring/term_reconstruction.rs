@@ -59,7 +59,13 @@ pub fn exp(
                         seq.push(call);
                     }
                     [reg] => {
-                        map.insert(reg.name, call);
+                        // Emit at the bytecode evaluation point. Deferring a
+                        // single-result call in `map` until its use could move it
+                        // after a later void call, write or abort. The refinement
+                        // pass may inline only into the next evaluated head.
+                        let tmp = reg.name();
+                        seq.push(Out::Exp::LetBind(vec![tmp.clone()], Box::new(call)));
+                        map.insert(reg.name, Out::Exp::Variable(tmp));
                     }
                     _ => {
                         let tmps = lhs
@@ -162,8 +168,26 @@ pub fn exp(
                     let [reg] = &lhs[..] else {
                         panic!("Register assignment with invalid lhs {:?}", lhs);
                     };
-                    let rvalue = rvalue(&mut map, RValue::Data { op, args });
-                    let res = map.insert(reg.name, rvalue);
+                    let ordered = matches!(
+                        op,
+                        DataOp::ReadRef
+                            | DataOp::VecPack(_)
+                            | DataOp::VecLen(_)
+                            | DataOp::VecImmBorrow(_)
+                            | DataOp::VecMutBorrow(_)
+                            | DataOp::VecPopBack(_)
+                    );
+                    let value = rvalue(&mut map, RValue::Data { op, args });
+                    // Pure struct construction / reference projection can remain
+                    // an expression. Their inputs have already been captured.
+                    let value = if ordered {
+                        let tmp = reg.name();
+                        seq.push(Out::Exp::LetBind(vec![tmp.clone()], Box::new(value)));
+                        Out::Exp::Variable(tmp)
+                    } else {
+                        value
+                    };
+                    let res = map.insert(reg.name, value);
                     assert!(res.is_none());
                 }
             },
@@ -171,8 +195,19 @@ pub fn exp(
                 let [reg] = &lhs[..] else {
                     panic!("Register assignment with invalid lhs {:?}", lhs);
                 };
+                let ordered = !matches!(rhs, RValue::Trivial(_));
                 let rvalue = rvalue(&mut map, rhs);
-                let res = map.insert(reg.name, rvalue);
+                // Reads and possibly-aborting arithmetic/casts must not float
+                // across later instructions either. Retain the original order;
+                // safe, head-only inlining can recover compact expressions.
+                let value = if ordered {
+                    let tmp = reg.name();
+                    seq.push(Out::Exp::LetBind(vec![tmp.clone()], Box::new(rvalue)));
+                    Out::Exp::Variable(tmp)
+                } else {
+                    rvalue
+                };
+                let res = map.insert(reg.name, value);
                 assert!(res.is_none());
             }
             SI::StoreLoc { loc, value } => {
@@ -201,7 +236,8 @@ pub fn exp(
             // the burned amount, which callers commonly discard). Dropping the entire
             // register here silently erased those calls from the reconstructed source.
             SI::Drop(reg) => seq.push(Out::Exp::LetBind(
-                vec![], Box::new(trivial(&mut map, Trivial::Register(reg))),
+                vec![],
+                Box::new(trivial(&mut map, Trivial::Register(reg))),
             )),
             SI::Nop | SI::NotImplemented(_) => continue,
         }
