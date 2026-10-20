@@ -10,7 +10,7 @@
 //! treat the loop as an opaque NMG IV-C abstract node.
 
 use crate::structuring::{
-    StructureContext, acyclic,
+    StructureContext, PostDom, acyclic, collect_slice, region,
     ast::{self as D},
     graph::Graph,
     region::SinkRendering,
@@ -33,6 +33,8 @@ pub(super) fn structure_loop(
         println!("structuring loop at node {loop_head:#?}");
     }
     let (loop_nodes, succ_nodes) = graph.find_loop_nodes(loop_head);
+    let (loop_nodes, succ_nodes) =
+        close_loop_exit_paths(graph, input, loop_head, loop_nodes, succ_nodes);
 
     // Partition succs into "owned by this loop's scope" (dominated by `loop_head`) and the
     // rest. Only owned succs become part of this loop's structure - unowned ones are
@@ -158,6 +160,132 @@ pub(super) fn structure_loop(
     };
     structured_blocks.insert(loop_head, result);
     install_reduced_marker(input, loop_head, &loop_nodes, &succ_nodes, &absorbed_succs);
+}
+
+/// Close a multi-exit loop over its acyclic exit paths up to their common join.
+///
+/// Use the CURRENT residue: a sibling loop is now a Reduced node whose successor
+/// may contain essential code (e.g. assigning a search result before unwinding).
+/// Guessing a cascade from the original dominator subtrees can skip that code and
+/// clone the shared continuation into several dispatch arms. Instead, place every
+/// exit path once inside the loop, ending at one shared break target.
+///
+/// Only absorb dominated, single-entry paths with no residual cycles or external
+/// exits. Other shapes keep the existing fallback and its fail-closed checks.
+fn close_loop_exit_paths(
+    graph: &Graph,
+    input: &BTreeMap<NodeIndex, D::Input>,
+    head: NodeIndex,
+    nodes: HashSet<NodeIndex>,
+    succs: HashSet<NodeIndex>,
+) -> (HashSet<NodeIndex>, HashSet<NodeIndex>) {
+    if succs.len() < 2 || succs.iter().any(|s| !input.contains_key(s)) {
+        return (nodes, succs);
+    }
+    let Some(post_dom) = PostDom::build(input) else { return (nodes, succs) };
+    let chain = |start| {
+        let mut order = vec![];
+        let mut seen = HashSet::new();
+        let mut next = Some(start);
+        while let Some(n) = next {
+            if !seen.insert(n) { break; }
+            order.push(n);
+            next = post_dom.ipostdom(n);
+        }
+        order
+    };
+    let mut exits: Vec<_> = succs.iter().copied().collect();
+    exits.sort_by_key(|n| n.index());
+    let chains: Vec<_> = exits.iter().map(|s| chain(*s)).collect();
+    let Some(join) = chains[0].iter().copied()
+        .find(|n| chains.iter().all(|c| c.contains(n))) else {
+        return (nodes, succs);
+    };
+    let dominated: HashSet<_> = graph.dom_tree.get(head).all_children().collect();
+    if nodes.contains(&join) || !dominated.contains(&join) {
+        return (nodes, succs);
+    }
+    let mut added = HashSet::new();
+    for exit in exits {
+        added.extend(collect_slice(input, exit, join));
+    }
+    if added.iter().any(|n| nodes.contains(n) || !dominated.contains(n)) {
+        return (nodes, succs);
+    }
+    let mut expanded = nodes.clone();
+    expanded.extend(&added);
+    // No other scope may enter a moved block; no exit may be silently swallowed.
+    for (from, inp) in input {
+        for (_, to) in inp.edges() {
+            if (added.contains(&to) && !expanded.contains(from))
+                || (added.contains(from) && to != join && !added.contains(&to)) {
+                return (nodes, succs);
+            }
+        }
+    }
+    let members = expanded.iter().copied().filter(|n| *n != head).collect();
+    let projection = region::build_acyclic_projection(input, head, &members, SinkRendering::Loop);
+    if region::topological_order(&projection.input).is_none() {
+        return (nodes, succs);
+    }
+    (expanded, HashSet::from([join]))
+}
+
+#[cfg(test)]
+mod exit_path_tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn n(i: usize) -> NodeIndex { NodeIndex::new(i) }
+    fn set(ids: &[usize]) -> HashSet<NodeIndex> { ids.iter().map(|i| n(*i)).collect() }
+    fn fixture() -> (Graph, BTreeMap<NodeIndex, D::Input>) {
+        // Outer loop exits either to a sibling loop (2) or shared tail (4).
+        // The sibling loop's successor (3) assigns its result before the join.
+        let mut input = BTreeMap::from([
+            (n(0), D::Input::Condition(n(0), 0, n(1), n(4))),
+            (n(1), D::Input::Condition(n(1), 1, n(2), n(0))),
+            (n(2), D::Input::Condition(n(2), 2, n(5), n(3))),
+            (n(3), D::Input::Code(n(3), 3, Some(n(4)))),
+            (n(4), D::Input::Code(n(4), 4, None)),
+            (n(5), D::Input::Code(n(5), 5, Some(n(2)))),
+        ]);
+        let graph = Graph::new(&Config::default(), &input, n(0));
+        input.insert(n(2), D::Input::Reduced(n(2), vec![n(3)]));
+        input.remove(&n(5));
+        (graph, input)
+    }
+
+    #[test]
+    fn closes_reduced_sibling_loop_and_its_result_block_not_shared_tail() {
+        let (graph, input) = fixture();
+        let (nodes, succs) = close_loop_exit_paths(&graph, &input, n(0), set(&[0, 1]), set(&[2, 4]));
+        assert_eq!(nodes, set(&[0, 1, 2, 3]));
+        assert_eq!(succs, set(&[4]));
+    }
+
+    #[test]
+    fn does_not_absorb_paths_with_external_entries() {
+        let (graph, mut input) = fixture();
+        input.insert(n(6), D::Input::Code(n(6), 6, Some(n(3))));
+        let actual = close_loop_exit_paths(&graph, &input, n(0), set(&[0, 1]), set(&[2, 4]));
+        assert_eq!(actual, (set(&[0, 1]), set(&[2, 4])));
+    }
+
+    #[test]
+    fn does_not_absorb_paths_with_different_terminal_exits() {
+        let (graph, mut input) = fixture();
+        input.insert(n(3), D::Input::Code(n(3), 3, None));
+        let actual = close_loop_exit_paths(&graph, &input, n(0), set(&[0, 1]), set(&[2, 4]));
+        assert_eq!(actual, (set(&[0, 1]), set(&[2, 4])));
+    }
+
+    #[test]
+    fn does_not_absorb_unprocessed_cycles() {
+        let (graph, mut input) = fixture();
+        input.insert(n(2), D::Input::Condition(n(2), 2, n(2), n(3)));
+        let actual = close_loop_exit_paths(&graph, &input, n(0), set(&[0, 1]), set(&[2, 4]));
+        assert_eq!(actual, (set(&[0, 1]), set(&[2, 4])));
+    }
 }
 
 /// Replace the loop's input with `Input::Reduced(loop_head, succs)` so outer scopes treat it

@@ -562,6 +562,49 @@ mod tests {
     }
 
     #[test]
+    fn sibling_loop_exit_preserves_result_assignment_and_shared_unwind() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/modular-bounds-package.json"
+        )).unwrap();
+        let nodes = fixture["data"]["object"]["package"]["modules"]["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 10);
+        for node in nodes {
+            let bytes = BASE64.decode(node["bytes"].as_str().unwrap()).unwrap();
+            decompile_verified_bytecode(&bytes).unwrap_or_else(|e| panic!("{}: {e}", node["name"]));
+        }
+        let node = nodes.iter().find(|n| n["name"] == "modular_bounds").unwrap();
+        let bytes = BASE64.decode(node["bytes"].as_str().unwrap()).unwrap();
+        let module = CompiledModule::deserialize_with_defaults(&bytes).unwrap();
+        let (source, verification) = decompile_verified_bytecode(&bytes).unwrap();
+        assert_eq!(verification.bytecode_sha256,
+            "ecb0c7b0e3196299c8f5826aa902de847ce99eae98318b93056e77032af7ca21");
+        assert_eq!(verification.function_count, 14);
+        assert_eq!(verification.instruction_count, 1157);
+        assert!(verification.audit_warnings.is_empty());
+        let (_, bodies) = rendered_function_sections(&source);
+        assert_eq!(rendered_call_counts(&bodies), (74, 33));
+        assert_eq!([" == ", " != ", " < ", " > ", " <= ", " >= "].iter()
+            .map(|op| bodies.matches(op).count()).sum::<usize>(), 51);
+        assert_eq!([" as u8", " as u16", " as u32", " as u64", " as u128", " as u256"].iter()
+            .map(|op| bodies.matches(op).count()).sum::<usize>(), 58);
+        let body = source.split("fun try_last_floor_euclidean(").nth(1).unwrap();
+        assert!(!body.contains("__dispatch_"));
+        assert_eq!(body.matches("vector::is_empty<FloorSearchFrame>").count(), 1);
+        let assignment = body.find("l8 = option::some<u64>(l7)").unwrap();
+        let unwind = body.find("vector::is_empty<FloorSearchFrame>").unwrap();
+        assert!(assignment < unwind, "Search result must be assigned BEFORE the shared unwind");
+        // The policy still rejects duplicated or missing operations; no special
+        // coverage exemption was introduced for this module or loop shape.
+        let duplicate = source.replace(
+            "l8 = option::some<u64>(l7);",
+            "option::none<u64>(); l8 = option::some<u64>(l7);");
+        assert_ne!(duplicate, source);
+        assert!(!inspect_bytecode(&module, &bytes, &duplicate).known_instruction_coverage);
+        let missing = source.replace("l8 = option::some<u64>(l7);", "");
+        assert!(!inspect_bytecode(&module, &bytes, &missing).known_instruction_coverage);
+    }
+
+    #[test]
     fn rendered_write_ref_counter_handles_multiline_conditional_lvalues() {
         let source = r#"
             fun update(target: &mut u64, other: &mut u64, value: u64) {
