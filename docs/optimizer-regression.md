@@ -67,9 +67,12 @@ npm run build
 validation.json、逐函数原始/重编译指令及其哈希、汇总和工具版本。
 任一模块覆盖、构建、权限或指令对照失败均返回非零。
 
-Vercel Function 的 Linux 目标检查需要 Linux C 交叉编译器；本次 Windows 环境
-缺少 `x86_64-linux-gnu-gcc`，未完成该目标检查。Next.js 生产构建及本地 Rust
-反编译器/比较器构建已通过，仍需部署环境检查 Rust Function。
+Vercel Function 已在 Ubuntu 24.04、Rust 1.96.1 上通过
+`cargo build --locked --target x86_64-unknown-linux-gnu --bin decompile`，
+并以 `file` / `readelf` 核对实际链接的 Linux ELF 文件。Linux 主库 31 项和引擎
+37 项回归测试全部通过；同次 CI 的前端测试、类型检查及生产构建也通过。
+[首次完整 Linux 检查记录](https://github.com/otctoken/PackageToMove/actions/runs/40267262067)。
+`.github/workflows/verify.yml` 会在 main、codex 分支推送及 PR 中持续运行这些检查。
 
 ## 下载和部署范围
 
