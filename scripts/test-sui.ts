@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
-import { analyzePackage, dependenciesFromLinkage, getPackagePage, normalizePackageId } from "../lib/sui";
+import { analyzePackage, chainIdentifierToShortId, dependenciesFromLinkage, getPackagePage, normalizePackageId } from "../lib/sui";
 import { getMoveModuleBytecode } from "../lib/bytecode";
+
+assert.equal(chainIdentifierToShortId('4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S'),'35834a8a');
+assert.equal(chainIdentifierToShortId('4C78ADAC'),'4c78adac');
+assert.equal(chainIdentifierToShortId('1'.repeat(32)),'00000000');
+assert.throws(()=>chainIdentifierToShortId('not-a-chain-id'));
+assert.throws(()=>chainIdentifierToShortId('z'.repeat(44)));
 
 const root = normalizePackageId(
   "0x47c4b62aed92c5ae308ecd00253b64b3568ad97e6fb11e54b3d1ac5ed7be19ab",

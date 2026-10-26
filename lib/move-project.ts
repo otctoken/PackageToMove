@@ -24,6 +24,9 @@ export function projectPackages(result: AnalyzeResult, rootId: string): PackageR
     if (!pkg || pkg.status !== "ok" || !pkg.modules.length) {
       throw new Error(`依赖包 ${id} 不完整，无法导出完整 Move 项目`);
     }
+    if (pkg.chainId && byId.get(rootId)?.chainId && pkg.chainId !== byId.get(rootId)?.chainId) {
+      throw new Error(`依赖 ${id} 链标识不匹配`);
+    }
     output.push(pkg);
     for (const dep of pkg.dependencies) {
       if (skipSystemDecompilation(dep)) continue;
@@ -48,6 +51,7 @@ export function moveProjectFiles(
   mode: ExportMode = "audit",
 ) {
   if (!packages.length) throw new Error("没有可导出的包");
+  if (!["mainnet", "testnet", "devnet"].includes(network)) throw new Error("Invalid network");
   const root = packages[0];
   const newPackage = mode === "new-package";
   const rootIdentities = newPackage ? rootModuleIdentities(Object.fromEntries(root.modules.map(m =>
@@ -77,6 +81,7 @@ export function moveProjectFiles(
       ...(newPackage && pkg.id === root.id ? [] : [`published-at = "${pkg.id}"`]),
       "", "[dependencies]", ...deps, "",
     ].join("\n");
+    const moduleAddresses = new Set<string>();
     const modules = pkg.modules.map((mod) => {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(mod.name)) throw new Error("Invalid module path");
       const key = `${pkg.id}::${mod.name}`;
@@ -94,6 +99,7 @@ export function moveProjectFiles(
       const file = `${prefix}sources/${mod.name}.move`;
       const relocated = newPackage && pkg.id === root.id;
       const compatibility = adaptFriendSyntax(source);
+      moduleAddresses.add(compatibility.moduleId.split("::")[0]);
       const buildSource = compatibility.source;
       files[file] = relocated ? relocateMove(buildSource, rootIdentities, packageName(root.id)) : buildSource;
       if (compatibility.changed) files[file] = '// BUILD ADAPTER: audit source and exact friend ACL are retained in audit/ and manifest.json.\n' + files[file];
@@ -107,7 +113,23 @@ export function moveProjectFiles(
         expectedCompiledFriends:compatibility.expectedFriends.map(buildIdentity).sort(),
         verificationAppliesTo: "auditSourceFile", verification };
     });
-    manifest.push({ packageId: pkg.id, version: pkg.version, digest: pkg.digest,
+    if (moduleAddresses.size !== 1) throw new Error(`包 ${pkg.id} 的原始模块地址不唯一，无法确定发布依赖身份`);
+    const originalId = [...moduleAddresses][0];
+    // Live chain identity is preferred (required for resetting devnets). The
+    // stable official IDs keep older saved mainnet/testnet analyses usable.
+    const chainId = pkg.chainId ?? ({mainnet:'35834a8a',testnet:'4c78adac'} as Record<string,string>)[network];
+    if (network === 'devnet' && chainId && /^[0-9a-f]{8}$/.test(chainId)) {
+      files[`${prefix}Move.toml`] += `\n[environments]\ndevnet = "${chainId}"\n`;
+    }
+    if (!(newPackage && pkg.id === root.id) && chainId && /^[0-9a-f]{8}$/.test(chainId) &&
+        pkg.version && /^[1-9][0-9]*$/.test(pkg.version)) {
+      files[`${prefix}Published.toml`] = [
+        '# Reconstructed chain identity only; original toolchain and upgrade capability are unknown.',
+        `[published.${network}]`, `chain-id = "${chainId}"`, `published-at = "${pkg.id}"`,
+        `original-id = "${originalId}"`, `version = ${pkg.version}`, '',
+      ].join('\n');
+    }
+    manifest.push({ packageId: pkg.id, originalId, chainId:chainId ?? null, version: pkg.version, digest: pkg.digest,
       dependencies: pkg.dependencies, declaredDependencyVersions: pkg.dependencyVersions,
       skippedSystemDependencies: pkg.dependencies.filter(skipSystemDecompilation).map(id => ({
         id, declaredVersion: pkg.dependencyVersions?.[id] ?? null,
@@ -139,7 +161,8 @@ Existing objects and capabilities do not migrate; init will run again on publish
 Hardcoded IDs, type-name comparisons, external package expectations and init
 preconditions require manual review. No semantic-equivalence or publish claim is made.
 Third-party dependencies remain existing packages, NOT copies to publish anew.
-Their publication metadata/linkage must be validated before root publication.` :
+Network-scoped Published.toml files retain both their original bytecode identity
+and exact published package object. Validate linkage before root publication.` :
 `This is an audit-only project retaining original addresses, not a new publication.`}
 
 Root modules are in sources/. Dependencies are separate local packages in
@@ -166,6 +189,9 @@ Run locally with a compatible Sui CLI:
 
 This runs sui move build, exact friend-table comparison, and sui move test; it writes build.log/test.log and
 validation.json, and exits nonzero on failure. It NEVER publishes or upgrades.
+In new-package mode it also generates publish-input.json offline with
+--dump-bytecode-as-base64 --no-tree-shaking, checking that only root modules and
+the expected existing dependencies are included. This does not execute a publish.
 Add business tests under tests/. Zero tests do not establish correct behavior.
 Validation results apply only to the hashed local inputs, not future edits.
 
@@ -180,5 +206,12 @@ dependency linkage, object compatibility and test results. No transaction is sen
 `;
   files["verify.mjs"] = projectVerifier;
   files["move-acl.mjs"] = moveAclReader;
+  files["tests/README.md"] = `# Add application tests here
+
+On-chain bytecode omits the original author's test-only code. No business tests
+are invented by this export. Add Move #[test] functions for expected behavior,
+abort paths and access control, then run node verify.mjs from the project root.
+An empty test suite is reported as zero tests, never as verified business logic.
+`;
   return files;
 }

@@ -30,7 +30,7 @@ async function loadPackage(id: string, network: Network, depth: number, version:
       throw new Error('Package 分页响应不完整，请刷新页面后重试');
     }
     if (version != null && page.version !== version) throw new Error('Package 分页版本不匹配');
-    if (combined && (page.digest !== combined.digest ||
+    if (combined && (page.chainId !== combined.chainId || page.digest !== combined.digest ||
         JSON.stringify(page.dependencies) !== JSON.stringify(combined.dependencies) ||
         JSON.stringify(page.dependencyVersions) !== JSON.stringify(combined.dependencyVersions))) {
       throw new Error('Package 分页摘要或 linkage 不匹配');

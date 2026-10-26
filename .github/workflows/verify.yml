@@ -1,0 +1,62 @@
+name: Verify
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend tests and production build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build
+
+  rust-linux:
+    name: Vercel Rust Function Linux build and regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install the tested Rust toolchain
+        run: rustup toolchain install 1.96.1 --profile minimal
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-rust-1.96.1-${{ hashFiles('Cargo.lock', 'vendor/**/*.rs', 'vendor/**/Cargo.toml') }}
+          restore-keys: linux-rust-1.96.1-
+      - name: Build and link the actual Linux API entrypoint
+        run: |
+          cargo +1.96.1 build --locked --target x86_64-unknown-linux-gnu --bin decompile
+          file target/x86_64-unknown-linux-gnu/debug/decompile
+          readelf -h target/x86_64-unknown-linux-gnu/debug/decompile
+      - name: Verify exact-bytecode and paired-instruction regressions
+        run: cargo +1.96.1 test --locked --target x86_64-unknown-linux-gnu --lib
+      - name: Verify vendored decompiler control-flow and expression tests
+        run: cargo +1.96.1 test --target x86_64-unknown-linux-gnu --manifest-path tests/decompiler-engine/Cargo.toml --lib

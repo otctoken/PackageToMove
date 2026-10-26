@@ -236,7 +236,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [activePackageId, setActivePackageId] = useState("");
-  const [exportMode, setExportMode] = useState<ExportMode>("audit");
+  const [exportMode, setExportMode] = useState<ExportMode>("new-package");
   const [activeModule, setActiveModule] = useState("");
   const [activeTab, setActiveTab] = useState<"source" | "bytecode">("source");
   const [filter, setFilter] = useState("");

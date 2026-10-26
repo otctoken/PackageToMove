@@ -69,7 +69,10 @@ pub fn module<S: SourceKind>(
             .map(|(k, (name, _))| (*k, name.clone()))
             .collect();
 
-        Context { constant_table, mutable_locals: Default::default() }
+        Context {
+            constant_table,
+            mutable_locals: Default::default(),
+        }
     };
 
     let crate::ast::Module {
@@ -274,7 +277,10 @@ fn collect_mutable_locals(e: &Exp, out: &mut std::collections::BTreeSet<String>)
 fn function(context: &Context, fun: &Function) -> Doc {
     let mut mutable_locals = Default::default();
     collect_mutable_locals(&fun.code, &mut mutable_locals);
-    let function_context = Context { constant_table: context.constant_table.clone(), mutable_locals };
+    let function_context = Context {
+        constant_table: context.constant_table.clone(),
+        mutable_locals,
+    };
     let context = &function_context;
     let header = fun_header_doc(context, fun);
     if fun.is_native {
@@ -312,11 +318,19 @@ fn function(context: &Context, fun: &Function) -> Doc {
         (Exp::Seq(_), None) => header.concat_space(exp(context, code)),
         (_, None) => header
             .concat_space(Doc::text("{"))
-            .concat(Doc::nest(Doc::line().concat(exp(context, code)).concat(
-                if matches!(inner, Exp::LetBind(_, _) | Exp::Assign(_, _) | Exp::Declare(_)) {
-                    Doc::text(";")
-                } else { Doc::nil() }
-            ), 4))
+            .concat(Doc::nest(
+                Doc::line().concat(exp(context, code)).concat(
+                    if matches!(
+                        inner,
+                        Exp::LetBind(_, _) | Exp::Assign(_, _) | Exp::Declare(_)
+                    ) {
+                        Doc::text(";")
+                    } else {
+                        Doc::nil()
+                    },
+                ),
+                4,
+            ))
             .concat(Doc::line())
             .concat(Doc::text("}")),
         // Notice present: we always wrap in our own braces so the notice can sit at the
@@ -792,10 +806,14 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
             }
             Exp::Abort(e) => D::text("abort").concat_space(recur(context, e)),
             Exp::Borrow(mutable, e) => {
+                let operand = match e.as_ref() {
+                    Exp::Variable(_) | Exp::Value(_) | Exp::Constant(_) => recur(context, e),
+                    _ => recur(context, e).parens(),
+                };
                 if *mutable {
-                    D::text("&mut").concat_space(recur(context, e))
+                    D::text("&mut").concat_space(operand)
                 } else {
-                    D::text("&").concat(recur(context, e))
+                    D::text("&").concat(operand)
                 }
             }
             Exp::Value(v) => value(v),
@@ -840,9 +858,9 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
                         let mut pat = D::text(format!("{enum_ty}::{variant}"));
                         if !fields.is_empty() {
                             let field_doc = Doc::intersperse(
-                                fields
-                                    .iter()
-                                    .map(|(sym, name)| D::text(format!("{sym}: ")).concat(context.binding(name))),
+                                fields.iter().map(|(sym, name)| {
+                                    D::text(format!("{sym}: ")).concat(context.binding(name))
+                                }),
                                 D::text(", "),
                             );
                             pat = pat
@@ -1232,6 +1250,15 @@ fn primitive_op_doc(context: &Context, op: &PrimitiveOp, args: &[Exp]) -> Doc {
     // `(amount as u128) * ((100 - tolerance) as u128) / 100u128`.
     fn operand_doc(context: &Context, parent: &PrimitiveOp, child: &Exp, right_child: bool) -> Doc {
         let doc = exp(context, child);
+        // Move's control expressions can absorb a following binary operator.
+        // `a * if (c) { b } else { d } / e` parses as a * (if (...) / e).
+        // Keep the recovered tree explicit even when the child is not a primitive.
+        if matches!(
+            child,
+            Exp::IfElse(..) | Exp::Match(..) | Exp::MatchLit(..) | Exp::Switch(..) | Exp::Block(..)
+        ) {
+            return doc.parens();
+        }
         let Exp::Primitive { op: child_op, .. } = child else {
             return doc;
         };
@@ -1373,6 +1400,40 @@ mod primitive_op_tests {
         );
 
         assert_eq!(render(&expression), "a - (b - c)");
+    }
+
+    #[test]
+    fn conditional_factor_cannot_capture_following_division() {
+        let factor = Exp::IfElse(
+            Box::new(var("c")),
+            Box::new(var("b")),
+            Box::new(Some(var("d"))),
+        );
+        let expression = primitive(
+            PrimitiveOp::Divide,
+            vec![
+                primitive(PrimitiveOp::Multiply, vec![var("a"), factor]),
+                var("e"),
+            ],
+        );
+        let text = render(&expression);
+        assert!(text.contains("a * (if"), "{text}");
+        assert!(text.contains("}) / e"), "{text}");
+    }
+
+    #[test]
+    fn borrow_preserves_arithmetic_operand_grouping() {
+        for (op, token) in [(PrimitiveOp::Add, "+"), (PrimitiveOp::Subtract, "-")] {
+            let value = primitive(op, vec![var("amount"), var("step")]);
+            assert_eq!(
+                render(&Exp::Borrow(false, Box::new(value.clone()))),
+                format!("&(amount {token} step)")
+            );
+            assert_eq!(
+                render(&Exp::Borrow(true, Box::new(value))),
+                format!("&mut (amount {token} step)")
+            );
+        }
     }
 }
 

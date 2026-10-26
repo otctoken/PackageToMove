@@ -378,14 +378,24 @@ fn inspect_bytecode(
     let mut audit_warnings = Vec::new();
     // Names are preserved in Move bytecode. Equal function totals alone would
     // not catch an omitted function replaced by an unrelated one.
-    let expected_names: std::collections::BTreeSet<String> = module.function_defs().iter()
-        .map(|f| module.identifier_at(module.function_handle_at(f.function).name).to_string())
+    let expected_names: std::collections::BTreeSet<String> = module
+        .function_defs()
+        .iter()
+        .map(|f| {
+            module
+                .identifier_at(module.function_handle_at(f.function).name)
+                .to_string()
+        })
         .collect();
     let rendered_names: std::collections::BTreeSet<String> = source.lines()
         .filter(|line| !line.trim_start().starts_with("//"))
         .filter_map(|line| line.split_once("fun "))
-        .map(|(_, rest)| rest.trim_start().chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect())
+        .map(|(_, rest)| {
+            rest.trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect()
+        })
         .collect();
     if expected_names != rendered_names {
         audit_warnings.push(format!("function symbols mismatch: missing {:?}; extra {:?}",
@@ -484,6 +494,20 @@ fn enforce_audit_policy(
 pub fn decompile_verified_bytecode(
     bytecode: &[u8],
 ) -> Result<(String, BytecodeVerification), String> {
+    // Large verified functions exceed the default Windows/Tokio worker stack.
+    // Keep stack policy identical for CLI, tests and the production API.
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("move-decompiler".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn_scoped(scope, || decompile_on_worker(bytecode))
+            .map_err(|error| format!("Could not start decompiler worker: {error}"))?
+            .join()
+            .map_err(|_| "Move decompiler failed while reconstructing control flow".to_owned())?
+    })
+}
+
+fn decompile_on_worker(bytecode: &[u8]) -> Result<(String, BytecodeVerification), String> {
     let module = CompiledModule::deserialize_with_defaults(bytecode)
         .map_err(|error| format!("Move bytecode parse failed: {error}"))?;
     move_bytecode_verifier::verify_module_unmetered(&module)
@@ -597,7 +621,8 @@ mod tests {
         // coverage exemption was introduced for this module or loop shape.
         let duplicate = source.replace(
             "l8 = option::some<u64>(l7);",
-            "option::none<u64>(); l8 = option::some<u64>(l7);");
+            "option::none<u64>(); l8 = option::some<u64>(l7);",
+        );
         assert_ne!(duplicate, source);
         assert!(!inspect_bytecode(&module, &bytes, &duplicate).known_instruction_coverage);
         let missing = source.replace("l8 = option::some<u64>(l7);", "");
@@ -705,11 +730,25 @@ mod tests {
 
     #[test]
     fn efbfd_discard_and_enum_regressions() {
-        for fixture in [include_str!("../tests/fixtures/efbfd-root.json"), include_str!("../tests/fixtures/efbfd-dependency.json")] {
+        for fixture in [
+            include_str!("../tests/fixtures/efbfd-root.json"),
+            include_str!("../tests/fixtures/efbfd-dependency.json"),
+        ] {
             let value: Value = serde_json::from_str(fixture).unwrap();
             for node in value["data"]["object"]["package"]["modules"]["nodes"].as_array().unwrap() {
                 let name = node["name"].as_str().unwrap();
-                if !["channel", "fee_collector", "set", "vaa", "state", "package_utils"].contains(&name) { continue; }
+                if ![
+                    "channel",
+                    "fee_collector",
+                    "set",
+                    "vaa",
+                    "state",
+                    "package_utils",
+                ]
+                .contains(&name)
+                {
+                    continue;
+                }
                 let bytes = BASE64.decode(node["bytes"].as_str().unwrap()).unwrap();
                 let (source, verification) = decompile_verified_bytecode(&bytes).unwrap();
                 assert!(verification.audit_warnings.is_empty());
@@ -726,6 +765,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn optimizer_project_retains_every_module_and_terminal_loop_path() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/optimizer-project.json")).unwrap();
+        let mut modules = 0;
+        for package in fixture["packages"].as_array().unwrap() {
+            for node in package["chain"]["data"]["object"]["package"]["modules"]["nodes"]
+                .as_array()
+                .unwrap()
+            {
+                let bytes = BASE64.decode(node["bytes"].as_str().unwrap()).unwrap();
+                let (source, verification) = decompile_verified_bytecode(&bytes).unwrap();
+                assert!(verification.audit_warnings.is_empty());
+                assert!(!source.contains("goto 'label_"));
+                assert!(!source.contains("Did not structure and emit blocks"));
+                if node["name"] == "optimizer" {
+                    assert_eq!(verification.function_count, 218);
+                    let body = source
+                        .split("fun loaded_reversal_point(")
+                        .nth(1)
+                        .unwrap()
+                        .split("\n}")
+                        .next()
+                        .unwrap();
+                    assert!(body.contains("optimizer::f6("));
+                    assert!(body.contains("l1 +"), "Keep the terminal returned amount");
+                    assert!(!source.contains("= &l100 - l11"));
+                    assert!(!source.contains("= &l100 + l11"));
+                }
+                modules += 1;
+            }
+        }
+        assert_eq!(modules, 37);
     }
 
     #[test]

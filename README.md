@@ -13,13 +13,15 @@
 
 ## 功能
 
-Download All 默认保留链上地址（原地址审计版）。可选“新包构建版”只迁移
+Download All 默认选择“新包构建版”，也可选择保留链上地址的“原地址审计版”。新包版只迁移
 主包模块路径，保留地址常量、字符串及外部依赖身份，并把未迁移源码放在
 `audit/sources/`。这不是找回部署前原工程：原测试、编译配置和锁文件不一定
 能从链上恢复。新包初始化和既有对象兼容性需单独检查。
 
 两个版本均包含 `verify.mjs`。解压后执行 `node verify.mjs` 运行构建、测试并
 输出日志及 `validation.json`，失败会返回非零退出码；不会发送交易。
+新包版附依赖 `Published.toml`，验证脚本还会离线生成并检查 `publish-input.json`，
+确保第三方依赖保持已发布身份，不混入主包发布内容。
 “测试命令成功但用例数为零”不代表业务测试通过，构建成功也不证明逻辑等价。
 
 涉及 `friend` 与 2024 语法混用时，`sources/` 为明确标注的构建适配副本，
@@ -63,14 +65,22 @@ cargo check --target x86_64-unknown-linux-gnu --bin decompile
 ```sh
 cargo build --bin verify_package --bin compare_project
 npm run test:roundtrip
+npm run test:optimizer-roundtrip
+cargo test --manifest-path tests/decompiler-engine/Cargo.toml --lib
 ```
 
 该回归对 efbfd 主包及普通依赖的 295 个函数逐项检查，输出原始/重编译字节码哈希和
 逐函数指令诊断。已修复引用赋值临时变量内联导致的调用顺序反转。
-当前结果为 200 个规范化指令相同、95 个限定指令模型匹配。
+当前结果为 210 个规范化指令相同、85 个限定指令模型匹配。
 通用求值顺序保护会保留必要的中间值，防止读取或调用被延后到写入/其他调用之后。
 实验性模型不证明 gas、历史框架实现或新包地址迁移等价，不放宽生产下载准入。
 详见 [56 项差异逐项复核](docs/efbfd-instruction-review.md)。
+
+optimizer 回归固定主包 `0x9a47ef4d425ce68377101118acdd60025f4af587f52ebd6df69b824d7d0fa08b`
+及其 6 个普通依赖的原始字节码，共 37 模块、1067 函数。它检查完整覆盖、两种导出
+模式的构建/测试命令、friend 权限表，以及原地址模式的逐函数指令对照。
+引擎测试使用独立 manifest，因为裁剪后的上游工作区没有收录全部上游测试包。
+详见 [optimizer 修复与验证范围](docs/optimizer-regression.md)。
 
 ## 重新构建 WASM
 

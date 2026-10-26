@@ -8,5 +8,6 @@ out
 !.env.example
 .research
 target
+tests/decompiler-engine/Cargo.lock
 vendor/move-decompiler-zig/.zig-cache
 vendor/move-decompiler-zig/zig-out

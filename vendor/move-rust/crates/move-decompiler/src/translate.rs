@@ -248,6 +248,39 @@ fn function<S: SourceKind>(
         .map(|f| f.type_parameters.clone())
         .unwrap_or_default();
     let param_names: Vec<String> = (0..parameters.len()).map(|i| format!("l{i}")).collect();
+    let is_scalar = |ty: &Out::Type| {
+        matches!(
+            ty,
+            Out::Type::Bool
+                | Out::Type::U8
+                | Out::Type::U16
+                | Out::Type::U32
+                | Out::Type::U64
+                | Out::Type::U128
+                | Out::Type::U256
+                | Out::Type::Address
+                | Out::Type::Reference(false, _)
+        )
+    };
+    let mut scalar_names = HashSet::new();
+    if let Some(f) = compiled {
+        for (i, ty) in f.parameters.iter().chain(f.locals.iter()).enumerate() {
+            if is_scalar(&Out::Type::from_normalized(ty)) {
+                scalar_names.insert(format!("l{i}"));
+            }
+        }
+    }
+    for block in fun.basic_blocks.values() {
+        for instruction in &block.instructions {
+            if let SB::Instruction::AssignReg { lhs, .. } = instruction {
+                for reg in lhs {
+                    if is_scalar(&Out::Type::from_normalized(&reg.ty)) {
+                        scalar_names.insert(reg.name());
+                    }
+                }
+            }
+        }
+    }
     let (name, terms, input, entry) = make_input(fun);
     if config.debug_print.input {
         print_heading("input");
@@ -266,7 +299,7 @@ fn function<S: SourceKind>(
     let targets = collect_goto_targets(&code);
     strip_untargeted_blocks(&mut code, &targets);
     crate::structuring::hoist_declarations::hoist_declarations(&mut code, param_names);
-    crate::refinement::refine(&mut code);
+    crate::refinement::refine(&mut code, &scalar_names);
     if config.debug_print.decompiled_code {
         print_heading("refined code");
         println!("{code}");

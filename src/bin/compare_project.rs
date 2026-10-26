@@ -1,5 +1,5 @@
 //! Compare original fixture bytes with rebuilt modules; no execution or transactions.
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use move_binary_format::{
     file_format::CompiledModule,
     normalized::{Module, RcPool},
@@ -17,7 +17,31 @@ fn collect(path: &Path, out: &mut BTreeMap<String, (CompiledModule, Vec<u8>)>) {
             collect(&entry.path(), out);
         } else if entry.path().extension().is_some_and(|s| s == "mv") {
             let bytes = std::fs::read(entry.path()).unwrap();
-            let m = CompiledModule::deserialize_with_defaults(&bytes).unwrap();
+            let m = CompiledModule::deserialize_with_defaults(&bytes).unwrap_or_else(|error| {
+                // Decode only for diagnostics; NEVER accept unchecked output.
+                let oversized: Vec<_> = CompiledModule::deserialize_no_check_bounds(&bytes)
+                    .ok()
+                    .map(|m| {
+                        m.function_defs
+                            .iter()
+                            .filter_map(|f| {
+                                let code = f.code.as_ref()?;
+                                let handle = m.function_handle_at(f.function);
+                                let count = m.signature_at(handle.parameters).len()
+                                    + m.signature_at(code.locals).len();
+                                (count > 255).then(|| {
+                                    format!("{}: {count} locals", m.identifier_at(handle.name))
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                panic!(
+                    "Invalid rebuilt module {}: {error:?}; {}",
+                    entry.path().display(),
+                    oversized.join(", ")
+                );
+            });
             let id = m.self_id().to_string();
             if let Some((_, previous)) = out.get(&id) {
                 assert_eq!(previous, &bytes, "Conflicting rebuilt module identity");

@@ -82,9 +82,13 @@ async fn fetch_chain_module(request: &DecompileRequest) -> Result<(String, Vec<u
     }
 
     let package_id = normalize_package_id(&request.package_id)?;
-    if matches!(package_id.trim_start_matches("0x").trim_start_matches('0'),
-        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") {
-        return Err(invalid("System addresses 0x1 through 0x8 are excluded from decompilation"));
+    if matches!(
+        package_id.trim_start_matches("0x").trim_start_matches('0'),
+        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8"
+    ) {
+        return Err(invalid(
+            "System addresses 0x1 through 0x8 are excluded from decompilation",
+        ));
     }
     let response = reqwest::Client::new()
         .post(graphql_endpoint(&request.network)?)
@@ -120,7 +124,10 @@ async fn handler(request: Request) -> Result<Value, Error> {
     let input: DecompileRequest = serde_json::from_slice(&body)
         .map_err(|error| invalid(format!("Invalid request body: {error}")))?;
     let (package_id, bytecode, linkage_table) = fetch_chain_module(&input).await?;
-    let (source, verification) = decompile_verified_bytecode(&bytecode).map_err(invalid)?;
+    let (source, verification) =
+        tokio::task::spawn_blocking(move || decompile_verified_bytecode(&bytecode))
+            .await?
+            .map_err(invalid)?;
 
     Ok(json!({
         "packageId": package_id,

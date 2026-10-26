@@ -9,7 +9,8 @@
     "lint": "tsc --noEmit",
     "test": "tsx scripts/test-decompiler.ts && tsx scripts/test-sui.ts && tsx scripts/test-move-project.ts && tsx scripts/test-relocate-move.ts && tsx scripts/test-friend-compatibility.ts && tsx scripts/test-analysis-client.ts",
     "test:roundtrip": "tsx scripts/test-efbfd-roundtrip.ts",
-    "test:modular-roundtrip": "tsx scripts/test-modular-roundtrip.ts"
+    "test:modular-roundtrip": "tsx scripts/test-modular-roundtrip.ts",
+    "test:optimizer-roundtrip": "tsx scripts/test-optimizer-roundtrip.ts"
   },
   "engines": {
     "node": ">=20.9.0"

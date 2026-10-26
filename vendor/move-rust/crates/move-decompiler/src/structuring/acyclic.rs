@@ -57,6 +57,15 @@ pub fn structure_region(
     unstructured: &mut HashSet<u64>,
 ) -> Option<D::Structured> {
     let proj = region::build_acyclic_projection(input, entry, members, rendering);
+    // Prefer lexical branch/join nesting when the DAG admits it. Reaching
+    // formulas are a fallback for shared-entry shapes, not a reason to hoist
+    // branch-local condition values and read them on paths that never set them.
+    if let Some((body, remaining)) =
+        structure_lexical_dag(&proj, structured_blocks, entry, unstructured)
+    {
+        *unstructured = remaining;
+        return Some(body);
+    }
     let reach = region::reaching_conditions(&proj.input, entry)?;
     let topo = region::topological_order(&proj.input)?;
 
@@ -113,6 +122,176 @@ pub fn structure_region(
     Some(body)
 }
 
+fn structure_lexical_dag(
+    proj: &AcyclicProjection,
+    blocks: &BTreeMap<NodeIndex, D::Structured>,
+    entry: NodeIndex,
+    unstructured: &HashSet<u64>,
+) -> Option<(D::Structured, HashSet<u64>)> {
+    // Explicitly decline cycles, variants and multi-exit reduced regions. The
+    // existing NMG path handles them; no speculative emissions are committed.
+    let order = region::topological_order(&proj.input)?;
+    fn breaks_to(body: &D::Structured, label: NodeIndex) -> bool {
+        match body {
+            D::Structured::Break(target) => *target == label,
+            D::Structured::Seq(items) => items.iter().any(|s| breaks_to(s, label)),
+            D::Structured::Loop(_, s) => breaks_to(s, label),
+            D::Structured::CondIf(_, yes, no) => {
+                breaks_to(yes, label) || no.as_ref().as_ref().is_some_and(|s| breaks_to(s, label))
+            }
+            D::Structured::Switch(_, _, arms) => arms.iter().any(|(_, s)| breaks_to(s, label)),
+            D::Structured::SelectorMatch(_, arms) => arms.iter().any(|(_, s)| breaks_to(s, label)),
+            _ => false,
+        }
+    }
+    fn reachable(
+        proj: &AcyclicProjection,
+        start: NodeIndex,
+        stops: &[(NodeIndex, NodeIndex)],
+    ) -> HashSet<NodeIndex> {
+        let mut reached = HashSet::new();
+        let mut pending = vec![start];
+        while let Some(n) = pending.pop() {
+            if !reached.insert(n) || stops.iter().any(|(stop, _)| *stop == n) {
+                continue;
+            }
+            pending.extend(
+                proj.input
+                    .get(&n)
+                    .into_iter()
+                    .flat_map(|b| b.edges().into_iter().map(|(_, to)| to)),
+            );
+        }
+        reached
+    }
+    fn path(
+        mut next: Option<NodeIndex>,
+        stop: Option<NodeIndex>,
+        proj: &AcyclicProjection,
+        blocks: &BTreeMap<NodeIndex, D::Structured>,
+        order: &[NodeIndex],
+        seen: &mut HashSet<NodeIndex>,
+        remaining: &mut HashSet<u64>,
+        exits: &[(NodeIndex, NodeIndex)],
+    ) -> Option<D::Structured> {
+        let mut items = vec![];
+        while next.is_some() && next != stop {
+            let n = next?;
+            if let Some((_, label)) = exits.iter().rev().find(|(target, _)| *target == n) {
+                items.push(D::Structured::Break(*label));
+                break;
+            }
+            // Exit jumps contain no original operations and may be reached
+            // independently by several terminating branches.
+            if let Some(exit) = proj.render_sink(n) {
+                if stop.is_some() && matches!(proj.sinks[&n], region::SinkBehavior::Silent) {
+                    return None;
+                }
+                seen.insert(n);
+                items.push(exit);
+                next = None;
+                continue;
+            }
+            if !seen.insert(n) {
+                return None;
+            }
+            let input = proj.input.get(&n)?;
+            items.push(to_structured_ast(n, proj, blocks, remaining));
+            match input {
+                D::Input::Code(_, _, successor) => next = *successor,
+                D::Input::Reduced(_, successors) if successors.len() <= 1 => {
+                    next = successors.first().copied()
+                }
+                D::Input::Condition(_, code, yes, no) => {
+                    // An early return/continue need not reach the join. Choose
+                    // the first common reachable node, allowing terminal arms
+                    // to finish before it. Shared real blocks are still emitted
+                    // once; overlapping non-lexical shapes fail the seen check.
+                    let yes_reach = reachable(proj, *yes, exits);
+                    let no_reach = reachable(proj, *no, exits);
+                    let join = order
+                        .iter()
+                        .copied()
+                        .find(|j| {
+                            !proj.sinks.contains_key(j)
+                                && !exits.iter().any(|(target, _)| target == j)
+                                && yes_reach.contains(j)
+                                && no_reach.contains(j)
+                        })
+                        .or(stop);
+                    // A one-iteration labeled region expresses a forward exit
+                    // to an ancestor join without duplicating its operations.
+                    // Original bytecode labels are u16 offsets; reserve a
+                    // disjoint label range for these synthetic regions.
+                    let label = NodeIndex::new(0x1000_0000 + n.index());
+                    let wrap = join.is_some() && join != stop;
+                    let mut child_exits = exits.to_vec();
+                    if wrap {
+                        child_exits.push((join.unwrap(), label));
+                    }
+                    let yes_body = path(
+                        Some(*yes),
+                        join,
+                        proj,
+                        blocks,
+                        order,
+                        seen,
+                        remaining,
+                        &child_exits,
+                    )?;
+                    let no_body = path(
+                        Some(*no),
+                        join,
+                        proj,
+                        blocks,
+                        order,
+                        seen,
+                        remaining,
+                        &child_exits,
+                    )?;
+                    let branch = D::Structured::CondIf(
+                        predicates::cond_atom(*code),
+                        Box::new(yes_body),
+                        Box::new(Some(no_body)),
+                    );
+                    items.push(if wrap && breaks_to(&branch, label) {
+                        D::Structured::Loop(
+                            label,
+                            Box::new(D::Structured::Seq(vec![
+                                branch,
+                                D::Structured::Break(label),
+                            ])),
+                        )
+                    } else {
+                        branch
+                    });
+                    next = join;
+                }
+                _ => return None,
+            }
+        }
+        Some(D::Structured::Seq(items))
+    }
+    let mut seen = HashSet::new();
+    let mut remaining = unstructured.clone();
+    let body = path(
+        Some(entry),
+        None,
+        proj,
+        blocks,
+        &order,
+        &mut seen,
+        &mut remaining,
+        &[],
+    )?;
+    // Every projected node must be accounted for exactly once. In particular,
+    // don't accept an overlap by cloning a shared continuation into both arms.
+    if seen.len() != proj.input.len() {
+        return None;
+    }
+    Some((body, remaining))
+}
+
 /// Translate `n` into a structured AST. Synthetic sinks emit exit-jumps (or empty for
 /// whole-function); real nodes emit `Block(code)` (Code/Condition/Variants) or pull the
 /// pre-structured form from `structured_blocks` (Reduced). Each `Block(code)` emission
@@ -137,7 +316,7 @@ fn to_structured_ast(
         Some(D::Input::Reduced(label, _)) => structured_blocks
             .get(label)
             .cloned()
-            .unwrap_or_else(|| D::Structured::Seq(vec![])),
+            .expect("Reduced region must retain its structured body"),
         None => D::Structured::Seq(vec![]),
     }
 }
@@ -678,4 +857,153 @@ fn collect_seq_arms(
 /// First `Some` index in `slots[start..]`, or `None` if all are taken.
 fn next_present<S>(slots: &[Option<S>], start: usize) -> Option<usize> {
     (start..slots.len()).find(|&j| slots[j].is_some())
+}
+
+#[cfg(test)]
+mod execution_tests {
+    use super::*;
+    use crate::ast::Exp;
+    use move_core_types::runtime_value::MoveValue;
+    use move_stackless_bytecode_2::ast::PrimitiveOp;
+
+    fn n(i: usize) -> NodeIndex {
+        NodeIndex::new(i)
+    }
+    fn eval(e: &Exp, flags: &BTreeMap<String, bool>) -> bool {
+        match e {
+            Exp::Value(MoveValue::Bool(v)) => *v,
+            Exp::Variable(v) => flags[v],
+            Exp::Primitive {
+                op: PrimitiveOp::Not,
+                args,
+            } => !eval(&args[0], flags),
+            Exp::Primitive {
+                op: PrimitiveOp::And,
+                args,
+            } => eval(&args[0], flags) && eval(&args[1], flags),
+            Exp::Primitive {
+                op: PrimitiveOp::Or,
+                args,
+            } => eval(&args[0], flags) || eval(&args[1], flags),
+            _ => panic!("Unexpected predicate {e:?}"),
+        }
+    }
+    fn execute(
+        s: &D::Structured,
+        input: &BTreeMap<NodeIndex, D::Input>,
+        mask: u32,
+        flags: &mut BTreeMap<String, bool>,
+        trace: &mut Vec<u64>,
+    ) -> Option<Option<NodeIndex>> {
+        match s {
+            D::Structured::Block(code) => {
+                trace.push(*code);
+                match &input[&n(*code as usize)] {
+                    D::Input::Condition(..) => {
+                        flags.insert(format!("__c{code}"), mask & (1 << code) != 0);
+                        None
+                    }
+                    D::Input::Code(_, _, None) => Some(None),
+                    _ => None,
+                }
+            }
+            D::Structured::Seq(items) => items
+                .iter()
+                .find_map(|s| execute(s, input, mask, flags, trace)),
+            D::Structured::CondIf(g, yes, no) => {
+                if eval(&g.to_exp(), flags) {
+                    execute(yes, input, mask, flags, trace)
+                } else {
+                    no.as_ref()
+                        .as_ref()
+                        .and_then(|s| execute(s, input, mask, flags, trace))
+                }
+            }
+            D::Structured::Jump(_, target) => {
+                trace.push(target.index() as u64);
+                Some(None)
+            }
+            D::Structured::Break(label) => Some(Some(*label)),
+            D::Structured::Loop(label, body) => match execute(body, input, mask, flags, trace) {
+                Some(Some(target)) if target == *label => None,
+                outcome => {
+                    assert!(outcome.is_some(), "Synthetic region must exit");
+                    outcome
+                }
+            },
+            _ => panic!("Unexpected structured form"),
+        }
+    }
+    fn check(input: BTreeMap<NodeIndex, D::Input>) {
+        let members = input.keys().copied().collect();
+        let mut missing = input.keys().map(|n| n.index() as u64).collect();
+        let body = structure_region(
+            &BTreeMap::new(),
+            &input,
+            n(0),
+            &members,
+            SinkRendering::Loop,
+            &mut missing,
+        )
+        .unwrap();
+        assert!(missing.is_empty());
+        for mask in 0..8 {
+            let mut expected = vec![];
+            let mut next = Some(n(0));
+            while let Some(node) = next {
+                expected.push(node.index() as u64);
+                next = match input.get(&node) {
+                    Some(D::Input::Code(_, _, to)) => *to,
+                    Some(D::Input::Condition(_, code, yes, no)) => {
+                        Some(if mask & (1 << code) != 0 { *yes } else { *no })
+                    }
+                    None => None,
+                    _ => panic!("Unexpected input"),
+                };
+            }
+            // Unvisited predicates must be don't-cares: BOTH initial values
+            // yield the exact original block/effect order on every path.
+            for initial in [false, true] {
+                let mut flags = (0..3).map(|i| (format!("__c{i}"), initial)).collect();
+                let mut trace = vec![];
+                execute(&body, &input, mask, &mut flags, &mut trace);
+                assert_eq!(trace, expected, "mask={mask}, initial={initial}");
+            }
+        }
+    }
+    #[test]
+    fn lexical_shared_exit_does_not_consume_ancestor_join() {
+        check(BTreeMap::from([
+            (n(0), D::Input::Condition(n(0), 0, n(1), n(2))),
+            (n(1), D::Input::Condition(n(1), 1, n(3), n(99))),
+            (n(2), D::Input::Condition(n(2), 2, n(4), n(99))),
+            (n(3), D::Input::Code(n(3), 3, Some(n(6)))),
+            (n(4), D::Input::Code(n(4), 4, Some(n(6)))),
+            (n(6), D::Input::Code(n(6), 6, None)),
+        ]));
+    }
+    #[test]
+    fn overlapping_shared_paths_preserve_effect_order_for_all_predicates() {
+        check(BTreeMap::from([
+            (n(0), D::Input::Condition(n(0), 0, n(1), n(2))),
+            (n(1), D::Input::Condition(n(1), 1, n(3), n(5))),
+            (n(2), D::Input::Condition(n(2), 2, n(3), n(4))),
+            (n(3), D::Input::Code(n(3), 3, Some(n(6)))),
+            (n(4), D::Input::Code(n(4), 4, Some(n(6)))),
+            (n(5), D::Input::Code(n(5), 5, Some(n(99)))),
+            (n(6), D::Input::Code(n(6), 6, None)),
+        ]));
+    }
+    #[test]
+    fn forward_exit_skips_inner_join_and_emits_shared_return_once() {
+        check(BTreeMap::from([
+            (n(0), D::Input::Condition(n(0), 0, n(1), n(7))),
+            (n(1), D::Input::Condition(n(1), 1, n(2), n(4))),
+            (n(2), D::Input::Condition(n(2), 2, n(3), n(7))),
+            (n(3), D::Input::Code(n(3), 3, Some(n(6)))),
+            (n(4), D::Input::Code(n(4), 4, Some(n(6)))),
+            (n(6), D::Input::Code(n(6), 6, Some(n(7)))),
+            (n(7), D::Input::Code(n(7), 7, None)),
+        ]));
+    }
 }

@@ -1,0 +1,20 @@
+[package]
+name = "decompiler-unit-tests"
+version = "0.0.0"
+edition = "2024"
+[lib]
+path = "../../vendor/move-rust/crates/move-decompiler/src/lib.rs"
+[dependencies]
+anyhow = "1.0.52"
+indexmap = "2.8.0"
+petgraph = "0.8.1"
+pretty_simple = "0.1.1"
+tempfile = "3.2.0"
+move-binary-format = { path = "../../vendor/move-rust/crates/move-binary-format" }
+move-command-line-common = { path = "../../vendor/move-rust/crates/move-command-line-common" }
+move-core-types = { path = "../../vendor/move-rust/crates/move-core-types" }
+move-model-2 = { path = "../../vendor/move-rust/crates/move-model-2" }
+move-package-alt = { path = "../../vendor/move-rust/crates/move-package-alt" }
+move-package-alt-compilation = { path = "../../vendor/move-rust/crates/move-package-alt-compilation" }
+move-stackless-bytecode-2 = { path = "../../vendor/move-rust/crates/move-stackless-bytecode-2" }
+move-symbol-pool = { path = "../../vendor/move-rust/crates/move-symbol-pool" }

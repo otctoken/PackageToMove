@@ -81,6 +81,7 @@ pub(crate) fn structure(
             D::Input::Reduced(_, _) => None,
         })
         .collect();
+    let expected_blocks = unstructured.clone();
 
     if config.debug_print.structuring {
         let mut post_order = DfsPostOrder::new(&graph.cfg, entry_node);
@@ -113,8 +114,8 @@ pub(crate) fn structure(
     //     isolation and install `Reduced(node, [post_dom])` (single-exit). Non-SESE
     //     slices fall through to be folded into a parent slice's projection.
     //
-    // Both branches write the region's structured AST into `region_bodies`; the
-    // lookup map serves the next region up as it projects its own subgraph.
+    // Loop and SESE reductions must share one body map. A loop can absorb a
+    // previously reduced acyclic tail; a second map would silently lose it.
     //
     // Post-dom is computed once over the original CFG. For non-loop nodes the post-dom
     // doesn't change after loops collapse - loops are "transparent" to dominator-style
@@ -122,7 +123,6 @@ pub(crate) fn structure(
     // graph. Loop heads themselves are processed as loops (not as SESE), so their
     // possibly-meaningless post-dom is never used.
     let post_dom = PostDom::build(&input);
-    let mut region_bodies: BTreeMap<NodeIndex, D::Structured> = BTreeMap::new();
     for node in dom_tree_post_order(&graph, entry_node) {
         if !input.contains_key(&node) {
             continue;
@@ -142,18 +142,11 @@ pub(crate) fn structure(
                 &mut input,
                 &mut unstructured,
             );
-            if let Some(form) = structured_blocks.get(&node) {
-                region_bodies.insert(node, form.clone());
-            }
             continue;
         }
-        // Skip SESE on nodes that sit inside an unprocessed loop body. `structure_loop`
-        // needs the original body topology to build the loop's wrapped form, and the
-        // dom-tree post-order visits body nodes before the loop head, so pre-collapsing
-        // a body node would strip pieces the loop's own structuring still needs.
-        if graph.loop_exits.contains_key(&node) {
-            continue;
-        }
+        // Acyclic diamonds inside loops can be reduced too: loop discovery now
+        // uses the residue. This keeps branch-local predicates in their scopes
+        // instead of expanding them into whole-loop reaching formulas.
         let Some(post_dom) = post_dom.as_ref() else {
             continue;
         };
@@ -164,11 +157,14 @@ pub(crate) fn structure(
         if members.len() < 2 {
             continue;
         }
+        if members.iter().any(|n| graph.loop_heads.contains(n)) {
+            continue;
+        }
         if !is_sese_slice(&input, &members, node) {
             continue;
         }
         let Some(body) = acyclic::structure_region(
-            &region_bodies,
+            &structured_blocks,
             &input,
             node,
             &members,
@@ -185,7 +181,7 @@ pub(crate) fn structure(
                 members.len()
             );
         }
-        region_bodies.insert(node, body);
+        structured_blocks.insert(node, body);
         for m in &members {
             if *m != node {
                 input.remove(m);
@@ -196,7 +192,7 @@ pub(crate) fn structure(
 
     let residue_members: HashSet<NodeIndex> = input.keys().copied().collect();
     let mut body = acyclic::structure_region(
-        &region_bodies,
+        &structured_blocks,
         &input,
         entry_node,
         &residue_members,
@@ -205,6 +201,33 @@ pub(crate) fn structure(
     )
     .expect("structuring failed on top-level function residue after loop collapse");
     flatten_sequence(&mut body);
+    // Reduction bookkeeping alone cannot prove emission: a speculative body
+    // may be built and subsequently discarded. Check the final tree as well.
+    fn emitted(s: &D::Structured, out: &mut HashSet<u64>) {
+        use D::Structured as S;
+        match s {
+            S::Block(code) => {
+                out.insert(*code);
+            }
+            S::Seq(items) => items.iter().for_each(|s| emitted(s, out)),
+            S::Loop(_, s) => emitted(s, out),
+            S::CondIf(_, yes, no) => {
+                emitted(yes, out);
+                if let Some(no) = no.as_ref() {
+                    emitted(no, out);
+                }
+            }
+            S::Switch(code, _, arms) => {
+                out.insert(*code);
+                arms.iter().for_each(|(_, s)| emitted(s, out));
+            }
+            S::SelectorMatch(_, arms) => arms.iter().for_each(|(_, s)| emitted(s, out)),
+            _ => {}
+        }
+    }
+    let mut actual_blocks = HashSet::new();
+    emitted(&body, &mut actual_blocks);
+    unstructured.extend(expected_blocks.difference(&actual_blocks).copied());
     let mut leftover: Vec<u64> = unstructured.into_iter().collect();
     leftover.sort_unstable();
     (body, leftover)

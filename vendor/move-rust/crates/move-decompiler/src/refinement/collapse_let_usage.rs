@@ -1,7 +1,7 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Inline `let X = e; next` when `next`'s very first read is `X` and `X` has no other use.
+//! Inline a single-use binding at the next eager evaluation position.
 //!
 //! For an `Seq([..., LetBind([X], e), next, ...])` we fire when:
 //!   - `X` has exactly one defining `LetBind` (this one), zero `Assign`/`Declare`/`Unpack`,
@@ -9,7 +9,9 @@
 //!   - The unique read sits at `next`'s *head position* - the first child evaluated when
 //!     `next` runs. We walk `next` down its leftmost evaluation chain (`Return([head])`,
 //!     `Call(_, [head, ..])`, `IfElse(head, _, _)`, etc.) and require to arrive at
-//!     `Variable(X)`.
+//!     `Variable(X)`. Typed scalar and immutable-reference slot reads may precede it
+//!     only if the delayed RHS cannot write those slots. Resource moves, exclusive
+//!     references, mutable-borrowed slots and short-circuit RHS positions are excluded.
 //!
 //! When both hold, the binding is removed and the `Variable(X)` slot in `next` is replaced
 //! with `e`. Head-position is the safety net: `e` evaluates exactly where the original
@@ -21,17 +23,35 @@
 
 use crate::{
     ast::Exp,
-    refinement::{liveness::NameCounts, Refine},
+    refinement::{Refine, liveness::NameCounts},
 };
 use move_stackless_bytecode_2::ast::DataOp;
+use std::collections::HashSet;
 
-pub fn refine(exp: &mut Exp) -> bool {
+struct InlineContext<'a> {
+    counts: &'a NameCounts,
+    scalars: &'a HashSet<String>,
+}
+impl std::ops::Deref for InlineContext<'_> {
+    type Target = NameCounts;
+    fn deref(&self) -> &NameCounts {
+        self.counts
+    }
+}
+
+pub fn refine(exp: &mut Exp, scalars: &HashSet<String>) -> bool {
     let counts = NameCounts::analyze(exp);
-    CollapseLetUsage { counts: &counts }.refine(exp)
+    CollapseLetUsage {
+        counts: &InlineContext {
+            counts: &counts,
+            scalars,
+        },
+    }
+    .refine(exp)
 }
 
 struct CollapseLetUsage<'a> {
-    counts: &'a NameCounts,
+    counts: &'a InlineContext<'a>,
 }
 
 impl Refine for CollapseLetUsage<'_> {
@@ -46,11 +66,11 @@ impl Refine for CollapseLetUsage<'_> {
 // ------------------------------------------------------------------------------------------------
 // Per-Seq collapse loop
 
-fn collapse_in_seq(items: &mut Vec<Exp>, counts: &NameCounts) -> bool {
+fn collapse_in_seq(items: &mut Vec<Exp>, counts: &InlineContext<'_>) -> bool {
     let mut changed = false;
     let mut i = 0;
     while i + 1 < items.len() {
-        let Exp::LetBind(targets, _rhs) = &items[i] else {
+        let Exp::LetBind(targets, rhs) = &items[i] else {
             i += 1;
             continue;
         };
@@ -63,7 +83,18 @@ fn collapse_in_seq(items: &mut Vec<Exp>, counts: &NameCounts) -> bool {
             i += 1;
             continue;
         }
-        if !head_var_is(&items[i + 1], &x) {
+        let rhs_counts = NameCounts::analyze(rhs);
+        let stable_scalars: HashSet<_> = counts
+            .scalars
+            .iter()
+            .filter(|n| rhs_counts.assigns(n) == 0)
+            .cloned()
+            .collect();
+        let site = InlineContext {
+            counts: counts.counts,
+            scalars: &stable_scalars,
+        };
+        if !head_var_is(&items[i + 1], &x, &site) {
             i += 1;
             continue;
         }
@@ -73,7 +104,7 @@ fn collapse_in_seq(items: &mut Vec<Exp>, counts: &NameCounts) -> bool {
             unreachable!()
         };
         let mut payload = Some(*rhs);
-        let replaced = replace_head_var(&mut items[i], &x, &mut payload);
+        let replaced = replace_head_var(&mut items[i], &x, &mut payload, &site);
         debug_assert!(
             replaced,
             "head_var_is returned true but replace_head_var did not"
@@ -88,7 +119,7 @@ fn collapse_in_seq(items: &mut Vec<Exp>, counts: &NameCounts) -> bool {
 // ------------------------------------------------------------------------------------------------
 // Eligibility
 
-fn is_eligible(x: &str, counts: &NameCounts) -> bool {
+fn is_eligible(x: &str, counts: &InlineContext<'_>) -> bool {
     counts.reads(x) == 1
         && counts.letbinds(x) == 1
         && counts.assigns(x) == 0
@@ -101,16 +132,100 @@ fn is_eligible(x: &str, counts: &NameCounts) -> bool {
 
 /// Walk `exp` down its leftmost-evaluated child chain and return `true` if we land on
 /// `Variable(name)`. This is the read-side mirror of `replace_head_var`.
-fn head_var_is(exp: &Exp, name: &str) -> bool {
+fn inert(exp: &Exp, counts: &InlineContext<'_>) -> bool {
+    match exp {
+        Exp::Value(_) | Exp::Constant(_) => true,
+        // Moving a stable slot read before the inlined expression cannot change
+        // its value. The site excludes writes in the delayed expression; a
+        // borrow of the slot anywhere rules out indirect writes through aliases.
+        Exp::Variable(n) => counts.scalars.contains(n) && counts.mut_borrows(n) == 0,
+        _ => false,
+    }
+}
+fn argument_index(exp: &Exp, name: &str, counts: &InlineContext<'_>) -> Option<usize> {
+    let args = match exp {
+        // Move &&/|| short-circuit. Moving a preceding evaluation into their
+        // second operand could skip a call/abort that originally always ran.
+        Exp::Primitive {
+            op:
+                move_stackless_bytecode_2::ast::PrimitiveOp::And
+                | move_stackless_bytecode_2::ast::PrimitiveOp::Or,
+            ..
+        } => return None,
+        Exp::Call(_, args) | Exp::Return(args) | Exp::Primitive { args, .. } => args,
+        Exp::Data {
+            op: DataOp::WriteRef,
+            ..
+        } => return None,
+        Exp::Data { args, .. } => args,
+        _ => return None,
+    };
+    for (i, arg) in args.iter().enumerate() {
+        if head_var_is(arg, name, counts) {
+            return Some(i);
+        }
+        if !inert(arg, counts) {
+            break;
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+    use move_stackless_bytecode_2::ast::PrimitiveOp;
+    fn var(n: &str) -> Exp {
+        Exp::Variable(n.into())
+    }
+    fn fixture(tail: Exp) -> Exp {
+        Exp::Seq(vec![
+            Exp::LetBind(
+                vec!["temporary".into()],
+                Box::new(Exp::Data {
+                    op: DataOp::ReadRef,
+                    args: vec![var("reference")],
+                }),
+            ),
+            tail,
+        ])
+    }
+    #[test]
+    fn skips_stable_scalar_but_never_resource_or_exclusive_reference() {
+        let mut scalar = fixture(Exp::Return(vec![var("first"), var("temporary")]));
+        assert!(refine(&mut scalar, &HashSet::from(["first".into()])));
+        let mut resource = fixture(Exp::Return(vec![var("first"), var("temporary")]));
+        assert!(!refine(&mut resource, &HashSet::new()));
+    }
+    #[test]
+    fn cannot_delay_an_eager_read_into_short_circuit_rhs() {
+        for op in [PrimitiveOp::And, PrimitiveOp::Or] {
+            let mut code = fixture(Exp::Return(vec![Exp::Primitive {
+                op,
+                args: vec![var("first"), var("temporary")],
+            }]));
+            assert!(!refine(&mut code, &HashSet::from(["first".into()])));
+        }
+    }
+}
+fn head_var_is(exp: &Exp, name: &str, counts: &InlineContext<'_>) -> bool {
+    if argument_index(exp, name, counts).is_some() {
+        return true;
+    }
     match exp {
         Exp::Variable(n) => n == name,
-        _ => head_ref(exp).is_some_and(|h| head_var_is(h, name)),
+        _ => head_ref(exp).is_some_and(|h| head_var_is(h, name, counts)),
     }
 }
 
 /// Walk `exp` down its leftmost-evaluated child chain and replace the `Variable(name)` leaf
 /// with the contents of `replacement` (consumed). Returns `true` iff the leaf was found.
-fn replace_head_var(exp: &mut Exp, name: &str, replacement: &mut Option<Exp>) -> bool {
+fn replace_head_var(
+    exp: &mut Exp,
+    name: &str,
+    replacement: &mut Option<Exp>,
+    counts: &InlineContext<'_>,
+) -> bool {
     if let Exp::Variable(n) = exp {
         if n == name {
             *exp = replacement.take().expect("replacement available");
@@ -118,7 +233,17 @@ fn replace_head_var(exp: &mut Exp, name: &str, replacement: &mut Option<Exp>) ->
         }
         return false;
     }
-    head_mut(exp).is_some_and(|h| replace_head_var(h, name, replacement))
+    if let Some(i) = argument_index(exp, name, counts) {
+        let args = match exp {
+            Exp::Call(_, args)
+            | Exp::Return(args)
+            | Exp::Primitive { args, .. }
+            | Exp::Data { args, .. } => args,
+            _ => unreachable!(),
+        };
+        return replace_head_var(&mut args[i], name, replacement, counts);
+    }
+    head_mut(exp).is_some_and(|h| replace_head_var(h, name, replacement, counts))
 }
 
 /// The child of `exp` evaluated first under Move semantics, or `None` if `exp` either has no

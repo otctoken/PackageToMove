@@ -70,19 +70,58 @@ const REFINEMENTS: &[Refinement] = &[
     swap_continue_break_else::refine,
     swap_continue_fallthrough::refine,
     inline_immutable_alias::refine,
-    collapse_let_usage::refine,
 ];
 
 // -------------------------------------------------------------------------------------------------
 // Public Interface
 
-pub fn refine(exp: &mut Exp) {
+pub fn refine(exp: &mut Exp, scalar_names: &std::collections::HashSet<String>) {
     let mut changed = true;
     while changed {
         changed = false;
         for r in REFINEMENTS {
             changed |= r(exp);
         }
+        changed |= collapse_let_usage::refine(exp, scalar_names);
+    }
+    // NMG reaching predicates are total Boolean formulas. An atom for a block
+    // not visited on this path is a don't-care, masked by that block's reaching
+    // condition. Materialize ONLY these synthetic flags, never bytecode locals,
+    // so Move's definite-assignment checker can type-check cross-scope guards.
+    // Run after rewrites so scope sinking cannot undo the initialization.
+    ConditionFlags.refine(exp);
+    while flatten_seq::refine(exp) {}
+}
+
+struct ConditionFlags;
+impl Refine for ConditionFlags {
+    fn refine_custom(&mut self, exp: &mut Exp) -> bool {
+        let Exp::Declare(names) = exp else {
+            return false;
+        };
+        let (flags, locals): (Vec<_>, Vec<_>) = names.iter().cloned().partition(|name| {
+            crate::structuring::predicates::cond_block_from_name(move_symbol_pool::Symbol::from(
+                name.as_str(),
+            ))
+            .is_some()
+        });
+        if flags.is_empty() {
+            return false;
+        }
+        let mut items = vec![];
+        if !locals.is_empty() {
+            items.push(Exp::Declare(locals));
+        }
+        items.extend(flags.into_iter().map(|name| {
+            Exp::LetBind(
+                vec![name],
+                Box::new(Exp::Value(move_core_types::runtime_value::MoveValue::Bool(
+                    false,
+                ))),
+            )
+        }));
+        *exp = Exp::Seq(items);
+        true
     }
 }
 

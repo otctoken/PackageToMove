@@ -14,7 +14,7 @@ use move_binary_format::{
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum V {
     Atom(u32, Vec<usize>),
     Lit(String),
@@ -57,6 +57,8 @@ struct State {
     // A cell's location in this function. Shared cell ids preserve aliasing.
     cell_locals: Vec<usize>,
     variants: Vec<(V, String, String)>,
+    // Facts refer to immutable symbolic values, never to a mutable slot name.
+    conditions: Vec<(V, bool)>,
 }
 impl State {
     fn new(f: &Function<RcIdentifier>) -> Self {
@@ -70,6 +72,7 @@ impl State {
             stack: vec![],
             cell_locals: vec![],
             variants: vec![],
+            conditions: vec![],
         }
     }
     fn args(&mut self, n: usize) -> Result<Vec<V>, String> {
@@ -83,6 +86,36 @@ impl State {
             .get(i)
             .and_then(Clone::clone)
             .ok_or_else(|| format!("Unavailable local {i}"))
+    }
+    fn truth(&self, value: &V) -> Option<bool> {
+        if let V::Lit(v) = value {
+            if v == "Bool:01" {
+                return Some(true);
+            }
+            if v == "Bool:00" {
+                return Some(false);
+            }
+        }
+        self.conditions.iter().rev().find_map(|(v, truth)| {
+            if v == value {
+                Some(*truth)
+            } else if *v == not(value.clone()) {
+                Some(!truth)
+            } else {
+                None
+            }
+        })
+    }
+    fn assume(&mut self, value: V, truth: bool) {
+        if let V::Expr(op, args) = &value {
+            if op == "Not" {
+                self.assume(args[0].clone(), !truth);
+                return;
+            }
+        }
+        if self.truth(&value).is_none() {
+            self.conditions.push((value, truth));
+        }
     }
 }
 #[derive(Debug)]
@@ -197,18 +230,29 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
                     .push(literal(Type::Vector(Box::new((*p.0).clone())), &[0]));
                 continue;
             }
+            B::VecPack(p) => {
+                // Element evaluations remain ordered; constructing the typed
+                // value itself has no user code. Allocation limits, like Pack,
+                // are explicitly outside this diagnostic model.
+                let args = s.args(p.1.try_into().map_err(|_| "Vector arity overflow")?)?;
+                s.stack.push(V::Expr(format!("{op:?}"), args));
+                continue;
+            }
             B::Not => {
                 let v = s.args(1)?.remove(0);
                 s.stack.push(not(v));
                 continue;
             }
             B::Eq | B::Neq | B::Lt | B::Ge | B::Gt | B::Le => {
-                let args = s.args(2)?;
-                let key = match op {
-                    B::Eq | B::Neq => "Eq",
-                    B::Lt | B::Ge => "Lt",
-                    _ => "Gt",
+                let mut args = s.args(2)?;
+                let key = if matches!(op, B::Eq | B::Neq) {
+                    "Eq"
+                } else {
+                    "Lt"
                 };
+                if matches!(op, B::Gt | B::Le) || (key == "Eq" && args[0] > args[1]) {
+                    args.swap(0, 1);
+                }
                 let v = V::Expr(key.into(), args);
                 s.stack.push(if matches!(op, B::Neq | B::Ge | B::Le) {
                     not(v)
@@ -224,11 +268,9 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
                 } else {
                     (s.pc, *t as usize)
                 };
-                if let V::Lit(v) = &value {
-                    if v == "Bool:01" || v == "Bool:00" {
-                        s.pc = if v == "Bool:01" { yes } else { no };
-                        continue;
-                    }
+                if let Some(truth) = s.truth(&value) {
+                    s.pc = if truth { yes } else { no };
+                    continue;
                 }
                 return Ok(Stop::Cond { value, yes, no });
             }
@@ -293,7 +335,7 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
                 return Ok(Stop::End {
                     key: "Abort".into(),
                     args: s.args(1)?,
-                })
+                });
             }
             B::Call(c) => {
                 return Ok(Stop::Op {
@@ -306,7 +348,7 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
                         .map(|t| matches!(**t, Type::Reference(..)))
                         .collect(),
                     mutates: true,
-                })
+                });
             }
             B::Unpack(p) => (1, p.struct_.fields.0.len(), false),
             B::ReadRef => (1, 1, false),
@@ -326,11 +368,6 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
             B::CastU8 | B::CastU16 | B::CastU32 | B::CastU64 | B::CastU128 | B::CastU256 => {
                 (1, 1, false)
             }
-            B::VecPack(p) => (
-                p.1.try_into().map_err(|_| "Vector arity overflow")?,
-                1,
-                false,
-            ),
             B::VecLen(_) => (1, 1, false),
             B::VecImmBorrow(_) | B::VecMutBorrow(_) => (2, 1, false),
             B::VecPushBack(_) => (2, 0, true),
@@ -355,8 +392,8 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
 }
 // State key alpha-renames *jointly*, retaining every cross-program correlation.
 // No branch is sampled/unrolled a fixed number of times and declared equivalent.
-fn state_key(a: &State, b: &State) -> String {
-    fn val(v: &V, ids: &mut BTreeMap<u32, usize>) -> String {
+fn state_key(a: &State, b: &State, symbols: &mut BTreeMap<String, usize>) -> String {
+    fn val(v: &V, ids: &mut BTreeMap<u32, usize>, symbols: &mut BTreeMap<String, usize>) -> String {
         match v {
             V::Atom(i, deps) => {
                 let next = ids.len();
@@ -365,10 +402,23 @@ fn state_key(a: &State, b: &State) -> String {
             }
             V::Lit(s) => format!("l{s:?}"),
             V::Cell(i) => format!("c{i}"),
-            V::Expr(op, args) => format!(
-                "e{op:?}{:?}",
-                args.iter().map(|v| val(v, ids)).collect::<Vec<_>>()
-            ),
+            V::Expr(op, args) => {
+                // Intern complete type/operator descriptions without losing
+                // identity. Large struct layouts otherwise repeat in every key.
+                let symbol = if let Some(id) = symbols.get(op) {
+                    *id
+                } else {
+                    let id = symbols.len();
+                    symbols.insert(op.clone(), id);
+                    id
+                };
+                format!(
+                    "e{symbol}{:?}",
+                    args.iter()
+                        .map(|v| val(v, ids, symbols))
+                        .collect::<Vec<_>>()
+                )
+            }
         }
     }
     let mut ids = BTreeMap::new();
@@ -378,19 +428,120 @@ fn state_key(a: &State, b: &State) -> String {
         for l in &s.locals {
             parts.push(
                 l.as_ref()
-                    .map(|v| val(v, &mut ids))
+                    .map(|v| val(v, &mut ids, symbols))
                     .unwrap_or("none".into()),
             )
         }
         parts.push(format!(
             "stack:{:?}",
-            s.stack.iter().map(|v| val(v, &mut ids)).collect::<Vec<_>>()
+            s.stack
+                .iter()
+                .map(|v| val(v, &mut ids, symbols))
+                .collect::<Vec<_>>()
         ));
         for (v, e, n) in &s.variants {
-            parts.push(format!("{}:{e}:{n}", val(v, &mut ids)))
+            parts.push(format!("{}:{e}:{n}", val(v, &mut ids, symbols)))
+        }
+        for (v, truth) in &s.conditions {
+            parts.push(format!("condition:{}:{truth}", val(v, &mut ids, symbols)));
         }
     }
     format!("{parts:?}")
+}
+
+// Dead compiler temporaries must not keep every loop iteration distinct. A
+// backward may-read analysis is conservative across all CFG successors; locals
+// reachable through a live reference are retained separately below.
+fn live_locals(f: &Function<RcIdentifier>) -> Vec<BTreeSet<usize>> {
+    let code = f.code();
+    let mut live = vec![BTreeSet::new(); code.len()];
+    loop {
+        let mut changed = false;
+        for (pc, op) in code.iter().enumerate().rev() {
+            let successors = match op {
+                B::Ret | B::Abort => vec![],
+                B::Branch(t) => vec![*t as usize],
+                B::BrTrue(t) | B::BrFalse(t) => vec![pc + 1, *t as usize],
+                B::VariantSwitch(t) => {
+                    let JumpTableInner::Full(ts) = &t.jump_table;
+                    ts.iter().map(|t| *t as usize).collect()
+                }
+                _ => vec![pc + 1],
+            };
+            let mut next = BTreeSet::new();
+            for successor in successors {
+                if let Some(set) = live.get(successor) {
+                    next.extend(set);
+                }
+            }
+            match op {
+                B::StLoc(i) => {
+                    next.remove(&(*i as usize));
+                }
+                B::CopyLoc(i) | B::MoveLoc(i) | B::ImmBorrowLoc(i) | B::MutBorrowLoc(i) => {
+                    next.insert(*i as usize);
+                }
+                _ => (),
+            }
+            if live[pc] != next {
+                live[pc] = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            return live;
+        }
+    }
+}
+fn discard_dead_locals(s: &mut State, live: &[BTreeSet<usize>]) {
+    let Some(mut keep) = live.get(s.pc).cloned() else {
+        return;
+    };
+    let mut reachable = BTreeSet::new();
+    for v in &s.stack {
+        cells(v, &mut reachable);
+    }
+    for (v, _, _) in &s.variants {
+        cells(v, &mut reachable);
+    }
+    loop {
+        let before = (keep.len(), reachable.len());
+        for i in &keep {
+            if let Some(Some(v)) = s.locals.get(*i) {
+                cells(v, &mut reachable);
+            }
+        }
+        for c in &reachable {
+            if let Some(i) = s.cell_locals.get(*c) {
+                keep.insert(*i);
+            }
+        }
+        if before == (keep.len(), reachable.len()) {
+            break;
+        }
+    }
+    for (i, v) in s.locals.iter_mut().enumerate() {
+        if !keep.contains(&i) {
+            *v = None;
+        }
+    }
+    fn contains(value: &V, fact: &V) -> bool {
+        value == fact
+            || match value {
+                V::Expr(_, args) => args.iter().any(|v| contains(v, fact)),
+                _ => false,
+            }
+    }
+    // Keep facts only for saved predicate values. Forgetting a fact is a safe
+    // over-approximation; retaining an entire branch history across loops would
+    // create exponential states for comparisons that are never reused.
+    s.conditions.retain(|(v, _)| {
+        s.locals
+            .iter()
+            .flatten()
+            .chain(&s.stack)
+            .any(|value| contains(value, v))
+    });
 }
 fn matching_memory(x: &State, y: &State, values: &[V]) -> Result<BTreeSet<usize>, String> {
     let mut pending = BTreeSet::new();
@@ -446,15 +597,26 @@ pub fn compare(a: &Function<RcIdentifier>, b: &Function<RcIdentifier>) -> BodyCo
             return Err("Native/empty body needs separate verification".into());
         }
         let mut queue = vec![(State::new(a), State::new(b))];
+        let (live_a, live_b) = (live_locals(a), live_locals(b));
         let mut seen = HashSet::new();
+        let mut symbols = BTreeMap::new();
         let mut fresh = a.parameters.len() as u32;
+        let mut locations = BTreeMap::<(usize, usize), usize>::new();
         while let Some((mut x, mut y)) = queue.pop() {
-            if !seen.insert(state_key(&x, &y)) {
+            discard_dead_locals(&mut x, &live_a);
+            discard_dead_locals(&mut y, &live_b);
+            if !seen.insert(state_key(&x, &y, &mut symbols)) {
                 continue;
             }
             count += 1;
-            if count > 20000 {
-                return Err("Paired-state budget exceeded".into());
+            *locations.entry((x.pc, y.pc)).or_default() += 1;
+            if count > 200_000 {
+                let mut busiest: Vec<_> = locations.into_iter().collect();
+                busiest.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+                busiest.truncate(5);
+                return Err(format!(
+                    "Paired-state budget exceeded; busiest offsets: {busiest:?}"
+                ));
             }
             let before = (x.pc, y.pc);
             let sx = advance(&mut x, a)?;
@@ -479,7 +641,7 @@ pub fn compare(a: &Function<RcIdentifier>, b: &Function<RcIdentifier>) -> BodyCo
                 ) => {
                     let (u, g) = if v == w {
                         (u, g)
-                    } else if v == not(w) {
+                    } else if v == not(w.clone()) {
                         (g, u)
                     } else {
                         return Err(format!("Condition operands differ near {before:?}"));
@@ -487,9 +649,13 @@ pub fn compare(a: &Function<RcIdentifier>, b: &Function<RcIdentifier>) -> BodyCo
                     let (mut xt, mut yt) = (x.clone(), y.clone());
                     xt.pc = t;
                     yt.pc = u;
+                    xt.assume(v.clone(), true);
+                    yt.assume(v.clone(), true);
                     queue.push((xt, yt));
                     x.pc = f;
                     y.pc = g;
+                    x.assume(v.clone(), false);
+                    y.assume(v, false);
                     queue.push((x, y));
                 }
                 (
@@ -598,7 +764,7 @@ pub fn compare(a: &Function<RcIdentifier>, b: &Function<RcIdentifier>) -> BodyCo
                 (sx, sy) => {
                     return Err(format!(
                         "Unmatched operation near {before:?}: {sx:?} versus {sy:?}"
-                    ))
+                    ));
                 }
             }
         }
@@ -678,6 +844,89 @@ mod tests {
             ),
             true,
         );
+    }
+    #[test]
+    fn reversed_comparison_is_total_but_boundary_changes_are_rejected() {
+        let a = module(
+            vec![T::U64, T::U64],
+            vec![T::Bool],
+            vec![],
+            vec![I::MoveLoc(0), I::MoveLoc(1), I::Ge, I::Ret],
+        );
+        check(
+            a.clone(),
+            module(
+                vec![T::U64, T::U64],
+                vec![T::Bool],
+                vec![],
+                vec![I::MoveLoc(1), I::MoveLoc(0), I::Le, I::Ret],
+            ),
+            true,
+        );
+        check(
+            a,
+            module(
+                vec![T::U64, T::U64],
+                vec![T::Bool],
+                vec![],
+                vec![I::MoveLoc(1), I::MoveLoc(0), I::Lt, I::Ret],
+            ),
+            false,
+        );
+    }
+    #[test]
+    fn repeated_condition_uses_path_fact_but_reassignment_invalidates_it() {
+        let a = module(
+            vec![T::Bool],
+            vec![T::U64],
+            vec![],
+            vec![
+                I::MoveLoc(0),
+                I::BrFalse(4),
+                I::LdU64(7),
+                I::Ret,
+                I::LdU64(9),
+                I::Ret,
+            ],
+        );
+        let b = module(
+            vec![T::Bool],
+            vec![T::U64],
+            vec![],
+            vec![
+                I::CopyLoc(0),
+                I::BrFalse(8),
+                I::MoveLoc(0),
+                I::BrFalse(6),
+                I::LdU64(7),
+                I::Ret,
+                I::LdU64(100),
+                I::Ret,
+                I::LdU64(9),
+                I::Ret,
+            ],
+        );
+        check(a.clone(), b, true);
+        let c = module(
+            vec![T::Bool],
+            vec![T::U64],
+            vec![],
+            vec![
+                I::CopyLoc(0),
+                I::BrFalse(10),
+                I::LdFalse,
+                I::StLoc(0),
+                I::MoveLoc(0),
+                I::BrFalse(8),
+                I::LdU64(7),
+                I::Ret,
+                I::LdU64(100),
+                I::Ret,
+                I::LdU64(9),
+                I::Ret,
+            ],
+        );
+        check(a, c, false);
     }
     #[test]
     fn changed_arithmetic_or_operand_order_is_not_a_compiler_difference() {

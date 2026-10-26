@@ -10,9 +10,11 @@
 //! treat the loop as an opaque NMG IV-C abstract node.
 
 use crate::structuring::{
-    StructureContext, PostDom, acyclic, collect_slice, region,
+    PostDom, StructureContext, acyclic,
     ast::{self as D},
+    collect_slice,
     graph::Graph,
+    region,
     region::SinkRendering,
 };
 
@@ -32,7 +34,10 @@ pub(super) fn structure_loop(
     if config.debug_print.structuring {
         println!("structuring loop at node {loop_head:#?}");
     }
-    let (loop_nodes, succ_nodes) = graph.find_loop_nodes(loop_head);
+    // Inner loops have already become Reduced nodes. Discover this loop in the
+    // current residue, not the original CFG: an absorbed inner loop may now lead
+    // to a different successor (including a terminal return path).
+    let (loop_nodes, succ_nodes) = residual_loop_nodes(graph, input, loop_head);
     let (loop_nodes, succ_nodes) =
         close_loop_exit_paths(graph, input, loop_head, loop_nodes, succ_nodes);
 
@@ -162,6 +167,80 @@ pub(super) fn structure_loop(
     install_reduced_marker(input, loop_head, &loop_nodes, &succ_nodes, &absorbed_succs);
 }
 
+fn residual_loop_nodes(
+    graph: &Graph,
+    input: &BTreeMap<NodeIndex, D::Input>,
+    head: NodeIndex,
+) -> (HashSet<NodeIndex>, HashSet<NodeIndex>) {
+    let mut predecessors: HashMap<NodeIndex, HashSet<NodeIndex>> = HashMap::new();
+    for (from, block) in input {
+        for (_, to) in block.edges() {
+            predecessors.entry(to).or_default().insert(*from);
+        }
+    }
+    let dominated: HashSet<_> = graph
+        .dom_tree
+        .get(head)
+        .all_children()
+        .chain(std::iter::once(head))
+        .collect();
+    let mut pending: Vec<_> = predecessors
+        .get(&head)
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter(|n| dominated.contains(n))
+        .collect();
+    let mut nodes = HashSet::from([head]);
+    while let Some(n) = pending.pop() {
+        if n == head || !nodes.insert(n) {
+            continue;
+        }
+        pending.extend(predecessors.get(&n).into_iter().flatten().copied());
+    }
+    let mut successors: HashSet<_> = nodes
+        .iter()
+        .filter_map(|n| input.get(n))
+        .flat_map(|block| block.edges().into_iter().map(|(_, to)| to))
+        .filter(|n| !nodes.contains(n))
+        .collect();
+    // As in Graph::refine_loop_nodes, absorb single-entry exit paths until
+    // only one exit remains. Reduced siblings must contribute their CURRENT
+    // out-edges, and terminal paths contribute no successor.
+    loop {
+        if successors.len() <= 1 {
+            break;
+        }
+        let mut candidates: Vec<_> = successors.iter().copied().collect();
+        candidates.sort_by_key(|n| n.index());
+        let mut changed = false;
+        for n in candidates {
+            if !input.contains_key(&n) || !dominated.contains(&n) {
+                continue;
+            }
+            if predecessors
+                .get(&n)
+                .is_some_and(|preds| preds.iter().all(|p| nodes.contains(p)))
+            {
+                nodes.insert(n);
+                successors.remove(&n);
+                successors.extend(
+                    input[&n]
+                        .edges()
+                        .into_iter()
+                        .map(|(_, to)| to)
+                        .filter(|to| !nodes.contains(to)),
+                );
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    (nodes, successors)
+}
+
 /// Close a multi-exit loop over its acyclic exit paths up to their common join.
 ///
 /// Use the CURRENT residue: a sibling loop is now a Reduced node whose successor
@@ -182,7 +261,9 @@ fn close_loop_exit_paths(
     if succs.len() < 2 || succs.iter().any(|s| !input.contains_key(s)) {
         return (nodes, succs);
     }
-    let Some(post_dom) = PostDom::build(input) else { return (nodes, succs) };
+    let Some(post_dom) = PostDom::build(input) else {
+        return (nodes, succs);
+    };
     let chain = |start| {
         let mut order = vec![];
         let mut seen = HashSet::new();

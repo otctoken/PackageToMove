@@ -11,6 +11,7 @@ export type ModuleResult = {
 
 export type PackageResult = {
   id: string;
+  chainId?: string;
   shortId: string;
   version: string | null;
   digest: string | null;

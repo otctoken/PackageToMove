@@ -15,6 +15,7 @@ const ENDPOINTS: Record<Network, string> = {
 
 const GRAPHQL_QUERY = `
   query Package($address: SuiAddress!, $after: String, $version: UInt53) {
+    chainIdentifier
     object(address: $address, version: $version) {
       package: asMovePackage {
       address
@@ -34,6 +35,23 @@ const GRAPHQL_QUERY = `
   }
 `;
 
+/** GraphQL now returns the full base58 genesis digest; Move uses its first 4 bytes. */
+export function chainIdentifierToShortId(value: string): string {
+  if (/^[0-9a-fA-F]{8}$/.test(value)) return value.toLowerCase();
+  if (value.length < 32 || value.length > 44) throw new Error('Invalid chain identifier length');
+  const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  let n = BigInt(0);
+  for (const char of value) {
+    const digit = alphabet.indexOf(char);
+    if (digit < 0) throw new Error('Invalid chain identifier');
+    n = n * BigInt(58) + BigInt(digit);
+  }
+  const hex = n.toString(16).padStart(2, '0');
+  const leading = value.match(/^1*/)?.[0].length ?? 0;
+  if ((n === BigInt(0) ? 0 : Math.ceil(hex.length / 2)) + leading !== 32) throw new Error('Invalid chain identifier length');
+  return hex.padStart(64, '0').slice(0, 8);
+}
+
 export function normalizePackageId(input: string) {
   const raw = input.trim().toLowerCase();
   if (!/^0x[0-9a-f]{1,64}$/.test(raw)) {
@@ -50,6 +68,7 @@ type PageOptions = { after?: string | null; singlePage?: boolean; signal?: Abort
 async function fetchGraphql(network: Network, id: string, version?: string, options: PageOptions = {}) {
   type GraphResponse = {
     data?: {
+      chainIdentifier?: string;
       object?: { package?: {
         address?: string;
         version?: string | number;
@@ -71,6 +90,7 @@ async function fetchGraphql(network: Network, id: string, version?: string, opti
   let cursor: string | null = options.after ?? null;
   let pinnedVersion = version;
   let pinnedDigest: string | undefined;
+  let chainId: string | undefined;
   let pkg: NonNullable<NonNullable<NonNullable<GraphResponse["data"]>["object"]>["package"]> | undefined;
   do {
     const result: GraphResponse = await postJsonResponse(ENDPOINTS[network], {
@@ -78,6 +98,11 @@ async function fetchGraphql(network: Network, id: string, version?: string, opti
       variables: { address: id, after: cursor, version: pinnedVersion == null ? null : Number(pinnedVersion) },
     }, "Sui GraphQL", options.signal, 18_000);
     if (result.errors?.length) throw new Error(result.errors[0].message);
+    if (result.data?.chainIdentifier) {
+      const current = chainIdentifierToShortId(result.data.chainIdentifier);
+      if (chainId && chainId !== current) throw new Error('Package 分页链标识不匹配');
+      chainId = current;
+    }
     pkg = result.data?.object?.package;
     if (!pkg) {
       throw new Error("该地址不是 Move Package，或在所选网络中不存在");
@@ -114,6 +139,7 @@ async function fetchGraphql(network: Network, id: string, version?: string, opti
     if (options.singlePage) break;
   } while (cursor);
   return {
+    chainId,
     version: pkg.version == null ? null : String(pkg.version),
     digest: pkg.digest ?? null,
     modules,
@@ -190,6 +216,7 @@ async function fetchPackage(
     id,
     shortId: shortId(id),
     version: graphData.version,
+    chainId: graphData.chainId,
     digest: graphData.digest,
     modules,
     dependencies,
