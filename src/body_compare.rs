@@ -169,7 +169,13 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
                 continue;
             }
             B::StLoc(i) => {
-                s.locals[*i as usize] = Some(s.args(1)?.remove(0));
+                let value = s.args(1)?.remove(0);
+                if s.cell_locals.contains(&(*i as usize))
+                    && s.locals[*i as usize].as_ref() != Some(&value)
+                {
+                    s.variants.clear();
+                }
+                s.locals[*i as usize] = Some(value);
                 continue;
             }
             B::Pop => {
@@ -308,18 +314,33 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
                         .collect(),
                 });
             }
-            B::UnpackVariantImmRef(v) if v.variant.fields.0.is_empty() => {
+            B::UnpackVariantImmRef(v) => {
                 let value = s.args(1)?.remove(0);
-                // This instruction can abort on the wrong tag. Elide ONLY after
-                // the same immutable value has been switched to this exact tag.
+                // Sui 1.82.3 eval.rs checks the tag, then returns field references
+                // in declaration order. The tag check is redundant ONLY after
+                // a switch of this exact reference to this exact enum variant.
+                // Mutation/calls clear variants; field identity and aliasing are
+                // retained in the symbolic tree. Gas/VM limits remain excluded.
                 if s.variants.contains(&(
-                    value,
+                    value.clone(),
                     format!("{:?}", v.enum_),
                     v.variant.name.to_string(),
                 )) {
+                    for index in 0..v.variant.fields.0.len() {
+                        s.stack.push(V::Expr(
+                            format!("{op:?}:field:{index}"),
+                            vec![value.clone()],
+                        ));
+                    }
                     continue;
                 }
-                return Err(format!("Unproven empty variant unpack at {pc}"));
+                return Ok(Stop::Op {
+                    key: format!("{op:?}"),
+                    args: vec![value],
+                    outputs: v.variant.fields.0.len(),
+                    refs: vec![true; v.variant.fields.0.len()],
+                    mutates: false,
+                });
             }
             B::Ret => {
                 let args = s.args(f.return_.len())?;
@@ -351,6 +372,16 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
                 });
             }
             B::Unpack(p) => (1, p.struct_.fields.0.len(), false),
+            B::UnpackVariant(p) => (1, p.variant.fields.0.len(), false),
+            B::UnpackVariantMutRef(p) => {
+                return Ok(Stop::Op {
+                    key: format!("{op:?}"),
+                    args: s.args(1)?,
+                    outputs: p.variant.fields.0.len(),
+                    refs: vec![true; p.variant.fields.0.len()],
+                    mutates: false,
+                });
+            }
             B::ReadRef => (1, 1, false),
             B::WriteRef => (2, 0, true),
             B::Add
@@ -619,6 +650,7 @@ pub fn compare(a: &Function<RcIdentifier>, b: &Function<RcIdentifier>) -> BodyCo
                 ));
             }
             let before = (x.pc, y.pc);
+            let (x_before, y_before) = (x.clone(), y.clone());
             let sx = advance(&mut x, a)?;
             let sy = advance(&mut y, b)?;
             match (sx, sy) {
@@ -761,6 +793,28 @@ pub fn compare(a: &Function<RcIdentifier>, b: &Function<RcIdentifier>) -> BodyCo
                     }
                     queue.push((x, y));
                 }
+                // Control layout can differ even when every effect is in the
+                // same order on every path. Split the conditional side and
+                // retain the other side BEFORE its next operation; no read,
+                // call, abort or write is silently skipped or reordered.
+                (Stop::Cond { value, yes, no }, _) => {
+                    for (target, truth) in [(yes, true), (no, false)] {
+                        let (mut xt, mut yt) = (x.clone(), y_before.clone());
+                        xt.pc = target;
+                        xt.assume(value.clone(), truth);
+                        yt.assume(value.clone(), truth);
+                        queue.push((xt, yt));
+                    }
+                }
+                (_, Stop::Cond { value, yes, no }) => {
+                    for (target, truth) in [(yes, true), (no, false)] {
+                        let (mut xt, mut yt) = (x_before.clone(), y.clone());
+                        yt.pc = target;
+                        xt.assume(value.clone(), truth);
+                        yt.assume(value.clone(), truth);
+                        queue.push((xt, yt));
+                    }
+                }
                 (sx, sy) => {
                     return Err(format!(
                         "Unmatched operation near {before:?}: {sx:?} versus {sy:?}"
@@ -771,7 +825,7 @@ pub fn compare(a: &Function<RcIdentifier>, b: &Function<RcIdentifier>) -> BodyCo
         Ok(())
     })();
     match result {
-        Ok(())=>BodyComparison{status:"matched-under-model",paired_states:count,reason:"All paired paths matched under conservative instruction model v1; excludes gas, resource limits and dependency implementations".into()},
+        Ok(())=>BodyComparison{status:"matched-under-model",paired_states:count,reason:"All paired paths matched under conservative instruction model v2; excludes gas, resource limits and dependency implementations".into()},
         Err(reason)=>BodyComparison{status:"unverified",paired_states:count,reason},
     }
 }
@@ -819,6 +873,154 @@ mod tests {
             matched,
             "{result:?}"
         );
+    }
+
+    fn enum_reference_module(
+        redundant_unpack: bool,
+        second_field: bool,
+        swap_tags: bool,
+    ) -> ff::CompiledModule {
+        let mut m = ff::basic_test_module_with_enum();
+        let mut ident = |name: &str| {
+            let i = ff::IdentifierIndex(m.identifiers.len() as u16);
+            m.identifiers.push(name.parse().unwrap());
+            i
+        };
+        let some = ident("Some");
+        let first = ident("first");
+        let second = ident("second");
+        m.enum_defs[0].variants.push(ff::VariantDefinition {
+            variant_name: some,
+            fields: vec![
+                ff::FieldDefinition {
+                    name: first,
+                    signature: ff::TypeSignature(T::U64),
+                },
+                ff::FieldDefinition {
+                    name: second,
+                    signature: ff::TypeSignature(T::U64),
+                },
+            ],
+        });
+        m.variant_handles.push(ff::VariantHandle {
+            enum_def: ff::EnumDefinitionIndex(0),
+            variant: 1,
+        });
+        let parameter = ff::SignatureIndex(m.signatures.len() as u16);
+        m.signatures
+            .push(ff::Signature(vec![T::Reference(Box::new(T::Datatype(
+                ff::DatatypeHandleIndex(1),
+            )))]));
+        let returns = ff::SignatureIndex(m.signatures.len() as u16);
+        m.signatures.push(ff::Signature(vec![T::U64]));
+        let locals = ff::SignatureIndex(m.signatures.len() as u16);
+        m.signatures
+            .push(ff::Signature(vec![T::Reference(Box::new(T::U64))]));
+        m.function_handles[0].parameters = parameter;
+        m.function_handles[0].return_ = returns;
+        let body = m.function_defs[0].code.as_mut().unwrap();
+        body.locals = locals;
+        body.code = vec![
+            I::CopyLoc(0),
+            I::VariantSwitch(ff::VariantJumpTableIndex(0)),
+            I::MoveLoc(0),
+            I::UnpackVariantImmRef(ff::VariantHandleIndex(0)),
+            I::LdU64(0),
+            I::Ret,
+        ];
+        if redundant_unpack {
+            body.code.extend([
+                I::CopyLoc(0),
+                I::UnpackVariantImmRef(ff::VariantHandleIndex(1)),
+                I::Pop,
+                I::Pop,
+            ]);
+        }
+        body.code.extend([
+            I::MoveLoc(0),
+            I::UnpackVariantImmRef(ff::VariantHandleIndex(1)),
+        ]);
+        if second_field {
+            body.code.extend([I::StLoc(1), I::Pop, I::MoveLoc(1)]);
+        } else {
+            body.code.push(I::Pop);
+        }
+        body.code.extend([I::ReadRef, I::Ret]);
+        body.jump_tables = vec![ff::VariantJumpTable {
+            head_enum: ff::EnumDefinitionIndex(0),
+            jump_table: ff::JumpTableInner::Full(if swap_tags { vec![6, 2] } else { vec![2, 6] }),
+        }];
+        move_bytecode_verifier::verify_module_unmetered(&m).expect("valid enum test bytecode");
+        m
+    }
+    #[test]
+    fn tagged_enum_reference_unpacks_preserve_field_identity() {
+        check(
+            enum_reference_module(true, false, false),
+            enum_reference_module(false, false, false),
+            true,
+        );
+        check(
+            enum_reference_module(true, false, false),
+            enum_reference_module(false, true, false),
+            false,
+        );
+        check(
+            enum_reference_module(true, false, false),
+            enum_reference_module(false, false, true),
+            false,
+        );
+    }
+    #[test]
+    fn split_control_layout_still_matches_every_observable_operation() {
+        let p = vec![T::Reference(Box::new(T::U64)), T::Bool];
+        let original = module(
+            p.clone(),
+            vec![T::U64],
+            vec![],
+            vec![
+                I::CopyLoc(1),
+                I::BrFalse(5),
+                I::MoveLoc(0),
+                I::ReadRef,
+                I::Ret,
+                I::MoveLoc(0),
+                I::ReadRef,
+                I::Ret,
+            ],
+        );
+        let hoisted = module(
+            p.clone(),
+            vec![T::U64],
+            vec![T::U64],
+            vec![
+                I::MoveLoc(0),
+                I::ReadRef,
+                I::StLoc(2),
+                I::MoveLoc(1),
+                I::BrFalse(7),
+                I::MoveLoc(2),
+                I::Ret,
+                I::MoveLoc(2),
+                I::Ret,
+            ],
+        );
+        check(original, hoisted.clone(), true);
+        let conditional_abort = module(
+            p,
+            vec![T::U64],
+            vec![],
+            vec![
+                I::CopyLoc(1),
+                I::BrFalse(5),
+                I::MoveLoc(0),
+                I::ReadRef,
+                I::Ret,
+                I::LdU64(7),
+                I::Abort,
+            ],
+        );
+        check(conditional_abort, hoisted, false);
     }
     #[test]
     fn harmless_local_shuffle_and_discard() {

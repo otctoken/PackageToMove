@@ -93,6 +93,24 @@ jobs:
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
         run: npm run test:optimizer-roundtrip -- .research/ci-optimizer
+      - name: Reject exact-bytecode certification even when the experimental model matches
+        shell: bash
+        run: |
+          set +e
+          target/x86_64-unknown-linux-gnu/debug/compare_project \
+            .research/ci-optimizer/chain-bytecode.json .research/ci-optimizer/audit/build \
+            --require-exact-bytecode > .research/ci-optimizer/exact-instruction-summary.json
+          compare_status=$?
+          set -e
+          node - "$compare_status" <<'NODE'
+          const assert = require('node:assert/strict');
+          const result = require('./.research/ci-optimizer/exact-instruction-summary.json');
+          assert.equal(result.unverifiedBodies, 0);
+          assert.equal(result.exactModuleBytecodeMatch, false);
+          assert(result.exactModuleBytecodeDifferences.length > 0);
+          assert.equal(result.semanticEquivalenceProven, false);
+          assert.equal(Number(process.argv[2]), 1);
+          NODE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -102,4 +120,5 @@ jobs:
             .research/ci-*/**/build.log
             .research/ci-*/**/test.log
             .research/ci-*/instruction-summary.json
+            .research/ci-*/exact-instruction-summary.json
           if-no-files-found: ignore

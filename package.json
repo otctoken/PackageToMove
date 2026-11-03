@@ -12,7 +12,8 @@
     "test:modular-roundtrip": "tsx scripts/test-modular-roundtrip.ts",
     "test:optimizer-roundtrip": "tsx scripts/test-optimizer-roundtrip.ts",
     "test:authority-roundtrip": "tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/authority-project.json",
-    "test:authority-build": "tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/authority-project.json --build-only"
+    "test:authority-build": "tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/authority-project.json --build-only",
+    "verify:official-source": "tsx scripts/verify-official-source.ts"
   },
   "engines": {
     "node": ">=20.9.0"

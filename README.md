@@ -107,6 +107,11 @@ Vercel 会从根目录的 `Cargo.toml` 构建 `api/decompile.rs` Rust Function�
 
 ## 数据限制
 
+完整验证流程及 MystenLabs 固定版本源码依据见 [逻辑等价与官方源码验证](docs/source-equivalence.md)。
+对原地址审计工程可运行 `npm run verify:official-source -- <audit-project>`，逐包调用官方
+`sui client verify-source`；原始编译器无法自动恢复时会失败，可显式指定 `--toolchain <sui-binary>`
+进行指定版本下的核对。指定编译器通过不代表已经恢复原始工具链。
+
 - GraphQL 使用 `object(address, version) { asMovePackage }` 精确读取包，不使用会追踪升级的 `package(address)`。前后端校验包地址、版本和模块字节码哈希。
 - 下载文件是**待验证的重建项目**，不是已验证的可部署产物。manifest.json 明确记录 `buildVerified: false` 和 `semanticEquivalenceVerified: false`。链上不含原作者的测试专用代码。
 - 旧方案反编译框架源码有 friend 权限、条件表达式类型、标识符和框架编译属性等构建失败。现改用官方系统依赖，目标 ac55 包的实际导出已构建成功，额外添加的 4 项冒烟测试通过；不能据此承诺所有业务合约等价或可重新部署。不得为了编译通过扩大权限或删除逻辑。

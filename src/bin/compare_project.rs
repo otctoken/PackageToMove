@@ -51,10 +51,13 @@ fn collect(path: &Path, out: &mut BTreeMap<String, (CompiledModule, Vec<u8>)>) {
     }
 }
 fn main() {
-    let args: Vec<_> = std::env::args().collect();
+    let exact_required = std::env::args().any(|arg| arg == "--require-exact-bytecode");
+    let args: Vec<_> = std::env::args()
+        .filter(|arg| arg != "--require-exact-bytecode")
+        .collect();
     assert!(
         (3..=4).contains(&args.len()),
-        "compare_project <fixture.json> <build-directory> [report.json]"
+        "compare_project <fixture.json> <build-directory> [report.json] [--require-exact-bytecode]"
     );
     let fixture: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&args[1]).unwrap()).unwrap();
@@ -67,6 +70,8 @@ fn main() {
     let mut differences = vec![];
     let mut matched = 0;
     let mut empty_module_metadata_differences = vec![];
+    let mut module_bytecode_differences = vec![];
+    let mut raw_identical_modules = 0;
     for node in fixture["data"]["object"]["package"]["modules"]["nodes"]
         .as_array()
         .unwrap()
@@ -80,6 +85,13 @@ fn main() {
             .expect("Original bytecode verification failed");
         move_bytecode_verifier::verify_module_unmetered(rebuilt)
             .expect("Rebuilt bytecode verification failed");
+        // Same module criterion as MystenLabs sui-source-verification/compare.rs
+        // at bf4073918ed33cfa0b09c500658fa116a774bcfd. This is an audit-address
+        // comparison; dependency linkage and original toolchain are separate.
+        raw_identical_modules += usize::from(bytes == *rebuilt_bytes);
+        if original != *rebuilt {
+            module_bytecode_differences.push(original.self_id().to_string());
+        }
         let a = Module::new(&mut pool, &original, true);
         let b = Module::new(&mut pool, rebuilt, true);
         assert_eq!(a.id, b.id);
@@ -88,9 +100,16 @@ fn main() {
         af.sort();
         bf.sort();
         if af != bf {
-            let empty = |m: &CompiledModule| m.function_defs.is_empty() && m.struct_defs.is_empty()
-                && m.enum_defs.is_empty() && m.constant_pool.is_empty();
-            assert!(empty(&original) && empty(rebuilt) && bf.is_empty(), "Friend ACL changed in a nonempty module");
+            let empty = |m: &CompiledModule| {
+                m.function_defs.is_empty()
+                    && m.struct_defs.is_empty()
+                    && m.enum_defs.is_empty()
+                    && m.constant_pool.is_empty()
+            };
+            assert!(
+                empty(&original) && empty(rebuilt) && bf.is_empty(),
+                "Friend ACL changed in a nonempty module"
+            );
             empty_module_metadata_differences.push(serde_json::json!({"module":a.id.to_string(),"originalFriends":af.iter().map(ToString::to_string).collect::<Vec<_>>(),"compiledFriends":bf.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "scope":"Empty module only; no functions, types or constants. Exact metadata and upgrade compatibility are not verified."}));
         }
@@ -155,14 +174,21 @@ fn main() {
         serde_json::json!({"modules":modules,"functions":functions,
         "interfacesAndLayoutsMatch":true,"normalizedFunctionBodiesIdentical":identical,
         "friendTablesIdentical":empty_module_metadata_differences.is_empty(),
+        "exactModuleBytecodeMatch":module_bytecode_differences.is_empty(),
+        "exactModuleBytecodeDifferences":module_bytecode_differences,
+        "rawBytecodeIdenticalModules":raw_identical_modules,
+        "moduleComparisonCriterion":"CompiledModule equality; MystenLabs/sui bf4073918ed33cfa0b09c500658fa116a774bcfd",
+        "linkageVerified":false,
         "emptyModuleMetadataDifferences":empty_module_metadata_differences,
         "additionalBodiesMatchedUnderModel":matched,
         "unverifiedBodies":functions-identical-matched,
-        "instructionModel":"paired-instruction-v1-experimental",
+        "instructionModel":"paired-instruction-v2-experimental",
         "instructionModelMatched":functions==identical+matched,
         "semanticEquivalenceProven":false})
     );
-    if functions != identical + matched {
+    if functions != identical + matched
+        || (exact_required && !module_bytecode_differences.is_empty())
+    {
         std::process::exit(1)
     }
 }

@@ -5,7 +5,7 @@
 //! reference/value unpacks. Move permits variant destructuring only in patterns.
 //! Only handle straight-line arms whose enum aliases are otherwise unused. Do
 //! not invent wildcard aborts or erase reads/writes to make a program compile.
-use super::{Refine, liveness::referenced_names, utils::{peek, peek_mut}};
+use super::{Refine, liveness::{referenced_names, NameCounts}, utils::{peek, peek_mut}};
 use crate::ast::{Exp, UnpackKind};
 use move_stackless_bytecode_2::ast::DataOp;
 use std::collections::{BTreeMap, BTreeSet};
@@ -124,7 +124,28 @@ impl Refine for Recover {
         false
     }
 }
-pub fn refine(e: &mut Exp) -> bool { Recover.refine(e) }
+pub fn refine(e: &mut Exp) -> bool {
+    if !Recover.refine(e) { return false; }
+    // A value match generates its own tag borrow. After recovery, an unused
+    // `let tag = &local` would otherwise compile to an extra BorrowLoc + Pop.
+    // Remove only this pure local borrow; keep freezes/calls/effectful operands.
+    struct Prune(NameCounts);
+    impl Refine for Prune {
+        fn refine_custom(&mut self, e: &mut Exp) -> bool {
+            let Exp::LetBind(ns, rhs) = e else { return false; };
+            if ns.len() != 1 || self.0.reads(&ns[0]) + self.0.assigns(&ns[0]) + self.0.mut_borrows(&ns[0]) != 0 {
+                return false;
+            }
+            if !matches!(rhs.as_ref(), Exp::Borrow(_, inner) if matches!(inner.as_ref(), Exp::Variable(_))) {
+                return false;
+            }
+            *e = Exp::Seq(vec![]);
+            true
+        }
+    }
+    Prune(NameCounts::analyze(e)).refine(e);
+    true
+}
 
 #[cfg(test)]
 mod tests {
@@ -153,6 +174,7 @@ mod tests {
         let mut e = fixture("v", false);
         assert!(refine(&mut e));
         let Exp::Seq(es) = e else { panic!() };
+        assert!(matches!(&es[0], Exp::Seq(items) if items.is_empty()), "Remove only the obsolete tag borrow");
         let Exp::Match(subject, _, arms) = &es[1] else { panic!() };
         assert!(matches!(subject.as_ref(), Exp::Variable(n) if n == "v"));
         assert_eq!(arms[0].1[0].1, "owned");

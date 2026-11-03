@@ -42,8 +42,8 @@ Sui CLI: `1.82.3-bf4073918ed3`.
 - Rust main library and decompiler engine regression tests cover the fixes and rejection cases.
 - Frontend tests and TypeScript checks pass.
 - All 37 modules retain function interfaces and struct/enum layouts. Of 847 functions,
-  431 have identical normalized instructions, 393 match the existing paired-instruction
-  model, and **23 remain unverified**. These include enum reconstruction, borrow forms
+  433 have identical normalized instructions, 408 match the experimental v2 paired-instruction
+  model, and **6 remain unverified** (previously 23 under v1). These include enum reconstruction, borrow forms
   and control-flow/evaluation-order differences that the model cannot confirm.
   The strict instruction-comparison command still exits nonzero. Neither compilation
   nor a model match is a complete semantic-equivalence proof.
@@ -77,7 +77,12 @@ npm run test:authority-roundtrip
 `test:authority-build` verifies all module coverage, both export builds/tests, friend access
 checks and offline new-package publication input. It does not compare function instructions.
 `test:authority-roundtrip` additionally runs the strict instruction comparator and currently
-fails on the 23 unverified functions; this failure must not be described as a passing check.
+fails on the 6 unverified functions; this failure must not be described as a passing check.
+
+The subsequent [official-source investigation](source-equivalence.md) additionally compares
+whole `CompiledModule` values without metadata normalization: 5 modules match, 32 differ.
+Actual official verification with Sui 1.82.3 passes 1 of 9 packages and fails 8 on bytecode
+differences. These are different criteria; instruction-model matches cannot override them.
 
 Linux CI builds the actual Vercel Rust Function, runs both Rust test suites and installs the
 official Sui 1.82.3 Ubuntu x86_64 release pinned by SHA-256. It runs the authority **build**

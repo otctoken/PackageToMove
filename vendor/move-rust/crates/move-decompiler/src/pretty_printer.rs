@@ -1091,17 +1091,18 @@ fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
     }
 
     match op {
-        // `*(&x.f)` collapses to `x.f` (value form). Same for `*(&v[i])` and the `&mut`
-        // variants - the round-trip ref-then-deref reads as the field/element value.
+        // Preserve mutable borrows when reading. Printing them as plain x.f or
+        // v[i] makes Move 2024 emit FreezeRef + an immutable borrow instead.
+        // The VM charges those instructions differently, despite the same value.
         DataOp::ReadRef => match &args[0] {
             Exp::Data {
-                op: DataOp::ImmBorrowField(field_ref) | DataOp::MutBorrowField(field_ref),
+                op: DataOp::ImmBorrowField(field_ref),
                 args: inner,
             } => maybe_parens(context, &inner[0])
                 .concat(D::text("."))
                 .concat(identifier_doc(field_ref.field.name.as_str())),
             Exp::Data {
-                op: DataOp::VecImmBorrow(_) | DataOp::VecMutBorrow(_),
+                op: DataOp::VecImmBorrow(_),
                 args: inner,
             } => maybe_parens(context, &inner[0])
                 .concat(D::text("["))
@@ -1382,6 +1383,16 @@ mod primitive_op_tests {
             variant_fields: Default::default(),
         };
         exp(&context, e).render(100)
+    }
+
+    #[test]
+    fn mutable_vector_read_keeps_its_borrow_instruction() {
+        let borrowed = Exp::Data {
+            op: DataOp::VecMutBorrow(std::rc::Rc::new(move_binary_format::normalized::Type::U64)),
+            args: vec![var("values"), var("index")],
+        };
+        assert_eq!(render(&Exp::Data { op: DataOp::ReadRef, args: vec![borrowed] }),
+            "*(&mut values[index])");
     }
 
     #[test]
