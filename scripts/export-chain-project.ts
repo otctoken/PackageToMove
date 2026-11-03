@@ -34,7 +34,7 @@ async function main() {
       const m = JSON.parse(line.slice(7));
       const key = `${pkg.id}::${m.name}`;
       sources[key] = m.source;
-      metadata[key] = {engine:"rust-move-decompiler", fallback:false, verification:m.verification};
+      metadata[key] = {engine:"rust-move-decompiler", fallback:false, verification:m.verification, bytecodeBase64:m.bytecodeBase64};
     }
   }
   const files = moveProjectFiles("mainnet", packages, sources, metadata, mode);

@@ -1,8 +1,9 @@
 /** Opt-in isolated-module compiler regression. No publishing or transactions.
  * A test-only caller establishes the original friend table; it is NOT chain code
  * and is never part of the frontend export. All ten real modules are coverage-checked.
- * This is not a full-package build claim: amm_math and sqrt currently have separate
- * definite-assignment compilation failures in their reconstructed condition guards.
+ * For the full ten-module package in both export modes, run test:math-roundtrip.
+ * The earlier amm_math/sqrt definite-assignment failures are fixed by the generic
+ * exhaustive-guard reconstruction; this isolated test remains a focused regression.
  */
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -28,7 +29,7 @@ const modules = checked.stdout.split(/\r?\n/).filter(l => l.startsWith('RESULT '
   const bytes = Buffer.from(p.modules.nodes.find((n: {name: string}) => n.name === m.name).bytes, 'base64');
   assert.equal(m.verification.bytecodeSha256, createHash('sha256').update(bytes).digest('hex'));
   sources[key] = m.source;
-  metadata[key] = { engine: 'rust-move-decompiler', fallback: false, verification: m.verification };
+  metadata[key] = { engine: 'rust-move-decompiler', fallback: false, verification: m.verification, bytecodeBase64: m.bytecodeBase64 };
   return { name: m.name, source: '', disassembly: null, functionCount: m.verification.functionCount,
     structCount: 0, bytecodeSha256: m.verification.bytecodeSha256 };
 });

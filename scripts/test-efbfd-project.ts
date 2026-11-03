@@ -14,7 +14,7 @@ const packages:PackageResult[]=[];
 for(const role of ['root','dependency']) {
   const input=readFileSync(`tests/fixtures/efbfd-${role}.json`,'utf8');
   const p=JSON.parse(input).data.object.package;
-  const checked=spawnSync(resolve(`target/debug/verify_package${process.platform==='win32'?'.exe':''}`),[],
+  const checked=spawnSync(resolve(process.env.MOVE_CHECKER_BIN_DIR || 'target/debug',`verify_package${process.platform==='win32'?'.exe':''}`),[],
     {input,encoding:'utf8',maxBuffer:32*1024*1024});
   assert.equal(checked.status,0,checked.stderr);
   const modules=[];
@@ -23,7 +23,7 @@ for(const role of ['root','dependency']) {
     const bytes=Buffer.from(p.modules.nodes.find((node:{name:string})=>node.name===m.name).bytes,'base64');
     assert.equal(m.verification.bytecodeSha256,createHash('sha256').update(bytes).digest('hex'));
     sources[key]=m.source;
-    metadata[key]={engine:'rust-move-decompiler',fallback:false,verification:m.verification};
+    metadata[key]={engine:'rust-move-decompiler',fallback:false,verification:m.verification,bytecodeBase64:m.bytecodeBase64};
     modules.push({name:m.name,source:'',disassembly:null,functionCount:m.verification.functionCount,
       structCount:0,bytecodeSha256:m.verification.bytecodeSha256});
     if(m.name==='fee_collector') assert.match(m.source,/let _ = x2_balance::join/);

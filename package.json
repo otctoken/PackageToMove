@@ -10,6 +10,7 @@
     "test": "tsx scripts/test-decompiler.ts && tsx scripts/test-sui.ts && tsx scripts/test-move-project.ts && tsx scripts/test-relocate-move.ts && tsx scripts/test-friend-compatibility.ts && tsx scripts/test-analysis-client.ts",
     "test:roundtrip": "tsx scripts/test-efbfd-roundtrip.ts",
     "test:modular-roundtrip": "tsx scripts/test-modular-roundtrip.ts",
+    "test:math-roundtrip": "tsx scripts/test-standalone-roundtrip.ts tests/fixtures/modular-bounds-package.json",
     "test:optimizer-roundtrip": "tsx scripts/test-optimizer-roundtrip.ts",
     "test:authority-roundtrip": "tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/authority-project.json",
     "test:authority-build": "tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/authority-project.json --build-only",

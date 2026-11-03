@@ -66,6 +66,7 @@ cargo check --target x86_64-unknown-linux-gnu --bin decompile
 cargo build --bin verify_package --bin compare_project
 npm run test:roundtrip
 npm run test:optimizer-roundtrip
+npm run test:math-roundtrip
 cargo test --manifest-path tests/decompiler-engine/Cargo.toml --lib
 ```
 
@@ -106,6 +107,9 @@ zig build wasm
 Vercel 会从根目录的 `Cargo.toml` 构建 `api/decompile.rs` Rust Function，同时构建 Next.js 前端。默认使用公共 Sui GraphQL 节点；生产流量较大时，可参考 `.env.example` 配置自己的 GraphQL 服务商节点。
 
 ## 数据限制
+
+“6 个未确认”“5/37 完整模块一致”的解释，以及四组真实项目的通用回归范围，见
+[通用适配与验证结果](docs/general-compatibility.md)。规则按语法和字节码应用，不按合约地址放行。
 
 完整验证流程及 MystenLabs 固定版本源码依据见 [逻辑等价与官方源码验证](docs/source-equivalence.md)。
 对原地址审计工程可运行 `npm run verify:official-source -- <audit-project>`，逐包调用官方

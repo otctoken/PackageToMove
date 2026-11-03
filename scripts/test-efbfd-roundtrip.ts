@@ -23,7 +23,7 @@ run(process.execPath, [join(output, 'verify.mjs')]);
 // Sui tests emit unpublishable test headers; compare the normal build only.
 run('sui', ['move', 'build', '--path', output, '--silence-warnings'], process.platform === 'win32');
 const reports = [];
-const checker = resolve(`target/debug/compare_project${process.platform === 'win32' ? '.exe' : ''}`);
+const checker = resolve(process.env.MOVE_CHECKER_BIN_DIR || 'target/debug', `compare_project${process.platform === 'win32' ? '.exe' : ''}`);
 for (const [role, functions] of [['root', 103], ['dependency', 192]] as const) {
   writeFileSync(join(output, `chain-input-${role}.json`), readFileSync(`tests/fixtures/efbfd-${role}.json`));
   const reportPath = join(output, `instruction-${role}.json`);
@@ -42,7 +42,7 @@ for (const [role, functions] of [['root', 103], ['dependency', 192]] as const) {
   reports.push({ role, ...summary });
 }
 writeFileSync(join(output, 'instruction-summary.json'), JSON.stringify({
-  model: 'paired-instruction-v1-experimental',
+  models: [...new Set(reports.map(report=>report.instructionModel))],
   inputSha256: JSON.parse(readFileSync(join(output, 'validation.json'), 'utf8')).inputSha256,
   checkerBinarySha256: createHash('sha256').update(readFileSync(checker)).digest('hex'),
   suiVersion: run('sui', ['--version'], process.platform === 'win32').trim(),

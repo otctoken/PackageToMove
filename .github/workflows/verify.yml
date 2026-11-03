@@ -93,6 +93,14 @@ jobs:
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
         run: npm run test:optimizer-roundtrip -- .research/ci-optimizer
+      - name: Compare the complete 38-module efbfd project
+        env:
+          MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
+        run: npm run test:roundtrip -- .research/ci-efbfd
+      - name: Build both full math exports and compare all ten modules
+        env:
+          MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
+        run: npm run test:math-roundtrip -- .research/ci-math
       - name: Reject exact-bytecode certification even when the experimental model matches
         shell: bash
         run: |
