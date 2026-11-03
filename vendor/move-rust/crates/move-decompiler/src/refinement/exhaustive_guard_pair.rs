@@ -30,7 +30,7 @@ fn eval(e: &Exp, names: &[String], bits: usize) -> bool {
         _ => unreachable!("validated pure boolean formula"),
     }
 }
-fn recover(first: &Exp, second: &Exp) -> Option<(Exp, Exp)> {
+fn recover(first: &Exp, second: &Exp, borrowed: &BTreeSet<String>) -> Option<(Exp, Exp)> {
     let Exp::IfElse(outer, nested, no_else) = peek(first) else { return None; };
     let Exp::IfElse(other_guard, other_body, other_else) = peek(second) else { return None; };
     if no_else.is_some() || other_else.is_some() { return None; }
@@ -43,6 +43,9 @@ fn recover(first: &Exp, second: &Exp) -> Option<(Exp, Exp)> {
     let mut names = BTreeSet::new();
     if !boolean(outer, &mut names) || !boolean(inner, &mut names) || !boolean(other_guard, &mut names)
         || names.len() > 8 { return None; }
+    // An alias may mutate a predicate without mentioning its local name in
+    // the payload. Reject predicates mutably borrowed anywhere in the function.
+    if !names.is_disjoint(borrowed) { return None; }
     // Moving evaluation across the payload/prefix must not change any predicate.
     if !referenced_names(body).is_disjoint(&names) { return None; }
     let mut outer_names = BTreeSet::new();
@@ -69,12 +72,12 @@ fn recover(first: &Exp, second: &Exp) -> Option<(Exp, Exp)> {
             body.clone(), Box::new(Some(*other_body.clone()))),
     ))
 }
-struct Recover;
+struct Recover { borrowed: BTreeSet<String> }
 impl Refine for Recover {
     fn refine_custom(&mut self, e: &mut Exp) -> bool {
         let Exp::Seq(es) = peek_mut(e) else { return false; };
         for i in 0..es.len().saturating_sub(1) {
-            if let Some((first, second)) = recover(&es[i], &es[i+1]) {
+            if let Some((first, second)) = recover(&es[i], &es[i+1], &self.borrowed) {
                 es[i] = first; es[i+1] = second;
                 return true;
             }
@@ -82,11 +85,18 @@ impl Refine for Recover {
         false
     }
 }
-pub fn refine(e: &mut Exp) -> bool { Recover.refine(e) }
+pub fn refine(e: &mut Exp) -> bool {
+    let counts = NameCounts::analyze(e);
+    let borrowed = referenced_names(e).into_iter().filter(|n| counts.mut_borrows(n) > 0).collect();
+    Recover { borrowed }.refine(e)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn recover(first: &Exp, second: &Exp) -> Option<(Exp, Exp)> {
+        super::recover(first, second, &BTreeSet::new())
+    }
     fn var(n: &str) -> Exp { Exp::Variable(n.into()) }
     fn not(e: Exp) -> Exp { Exp::Primitive {op: PrimitiveOp::Not, args:vec![e]} }
     fn assign(n: &str) -> Exp { Exp::Assign(vec![n.into()],Box::new(Exp::Value(MoveValue::Bool(true)))) }
@@ -127,5 +137,12 @@ mod tests {
             }
         }
         assert!(recover(&a,&b).is_none());
+    }
+    #[test]
+    fn rejects_predicates_that_can_change_through_an_alias() {
+        let (a,b)=pair();
+        let mut expression=Exp::Seq(vec![
+            Exp::LetBind(vec!["alias".into()],Box::new(Exp::Borrow(true,Box::new(var("a"))))),a,b]);
+        assert!(!refine(&mut expression));
     }
 }

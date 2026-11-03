@@ -30,6 +30,8 @@ Its unmodified project reproduces the reported compiler failure.
   are rejected. No fabricated initial values are assigned to original bytecode locals.
   Uses of bindings declared inside the conditional prefix are never moved out of scope;
   the existing optimizer project covers this boundary in a real build regression.
+  A predicate mutably borrowed anywhere in the function is also rejected: mutation
+  through a previously created reference alias need not mention the predicate name.
 
 ## Validation on 2026-11-03
 
