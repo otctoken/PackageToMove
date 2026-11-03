@@ -9,13 +9,21 @@ import { spawnSync } from 'node:child_process';
 import { moveProjectFiles, projectPackages } from '../lib/move-project';
 import type { AnalyzeResult, DecompileMetadata, PackageResult } from '../lib/types';
 
-const fixture = JSON.parse(readFileSync('tests/fixtures/optimizer-project.json', 'utf8'));
+const fixtureIndex = process.argv.indexOf('--fixture');
+const fixturePath = fixtureIndex < 0 ? 'tests/fixtures/optimizer-project.json' : process.argv[fixtureIndex + 1];
+assert(fixturePath, '--fixture requires a path');
+const fixture = JSON.parse(readFileSync(fixturePath, 'utf8'));
 const packages = projectPackages({ packages: fixture.packages.map((p: {package: PackageResult}) => p.package) } as AnalyzeResult, fixture.rootPackage);
+const expectedModules = packages.reduce((n,p)=>n+p.modules.length,0);
+const expectedFunctions = packages.reduce((n,p)=>n+p.modules.reduce((k,m)=>k+m.functionCount,0),0);
 mkdirSync('.research', { recursive: true });
-const output = process.argv[2] ? resolve(process.argv[2]) : mkdtempSync(resolve('.research/optimizer-roundtrip-'));
-if (process.argv[2]) assert(!existsSync(output), 'Choose a new output directory');
+const cliArgs = process.argv.slice(2).filter((arg,i)=> arg !== '--fixture' && arg !== '--build-only' && (fixtureIndex < 0 || i+2 !== fixtureIndex+1));
+const outputArg = cliArgs[0];
+assert(cliArgs.length <= 1,'Only one output directory is allowed');
+const output = outputArg ? resolve(outputArg) : mkdtempSync(resolve('.research/project-roundtrip-'));
+if (outputArg) assert(!existsSync(output), 'Choose a new output directory');
 mkdirSync(output, {recursive: true});
-const binary = (name: string) => resolve(`target/debug/${name}${process.platform === 'win32' ? '.exe' : ''}`);
+const binary = (name: string) => resolve(process.env.MOVE_CHECKER_BIN_DIR || 'target/debug',`${name}${process.platform === 'win32' ? '.exe' : ''}`);
 const sources: Record<string, string> = {}, metadata: Record<string, DecompileMetadata> = {};
 const nodes: Array<{name: string; bytes: string}> = [];
 function run(command: string, args: string[], input?: string, shell = false) {
@@ -37,11 +45,11 @@ for (const pkg of packages) {
     assert.equal(hash, pkg.modules.find(n => n.name === m.name)?.bytecodeSha256);
     const key = `${pkg.id}::${m.name}`;
     sources[key] = m.source;
-    metadata[key] = {engine:'rust-move-decompiler', fallback:false, verification:m.verification};
+    metadata[key] = {engine:'rust-move-decompiler', fallback:false, verification:m.verification, bytecodeBase64:m.bytecodeBase64};
   }
   console.log(`${pkg.id}: ${results.length} modules covered`);
 }
-assert.equal(nodes.length, 37);
+assert.equal(nodes.length, expectedModules);
 const chainPath = join(output, 'chain-bytecode.json');
 writeFileSync(chainPath, JSON.stringify({data:{object:{package:{modules:{nodes}}}}}));
 for (const mode of ['audit', 'new-package'] as const) {
@@ -56,6 +64,11 @@ for (const mode of ['audit', 'new-package'] as const) {
   assert.equal(validation.businessTestsVerified, false);
   assert.equal(validation.publishInputGenerated,mode==='new-package');
 }
+if(process.argv.includes('--build-only')) {
+  console.log(`${expectedModules}-module coverage, both builds/tests and friend ACL passed: ${output}`);
+  console.log('Build-only regression: instruction equivalence was NOT checked.');
+  process.exit(0);
+}
 // Test compilation uses an unpublishable header. Compare a fresh normal build.
 const audit = join(output, 'audit');
 run('sui', ['move','build','--path',audit,'--silence-warnings'], undefined, process.platform === 'win32');
@@ -66,14 +79,14 @@ const comparison = spawnSync(binary('compare_project'), [chainPath, join(audit,'
 writeFileSync(join(output,'instruction-summary.json'),comparison.stdout || '{}');
 assert.equal(comparison.status,0,comparison.error?.message || comparison.stderr + comparison.stdout);
 const summary = JSON.parse(comparison.stdout);
-assert.equal(summary.modules,37);
-assert.equal(summary.functions,1067);
+assert.equal(summary.modules,expectedModules);
+assert.equal(summary.functions,expectedFunctions);
 assert.equal(summary.unverifiedBodies,0);
 assert.equal(summary.semanticEquivalenceProven,false);
 writeFileSync(join(output,'provenance.json'),JSON.stringify({
-  fixtureSha256:createHash('sha256').update(readFileSync('tests/fixtures/optimizer-project.json')).digest('hex'),
+  fixtureSha256:createHash('sha256').update(readFileSync(fixturePath)).digest('hex'),
   checkerSha256:createHash('sha256').update(readFileSync(binary('compare_project'))).digest('hex'),
   suiVersion:run('sui',['--version'],undefined,process.platform==='win32').trim(),
   scope:'Original-address instruction model; excludes gas, resource limits, historical framework implementations and new-package identity equivalence.',
 },null,2));
-console.log(`37-module coverage, both builds/tests, friend ACL and instruction comparison passed: ${output}`);
+console.log(`${expectedModules}-module coverage, both builds/tests, friend ACL and instruction comparison passed: ${output}`);

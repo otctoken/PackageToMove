@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use http_body_util::BodyExt;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sui_scope_rust::{decode_graphql_module_response, decompile_verified_bytecode};
@@ -124,6 +125,7 @@ async fn handler(request: Request) -> Result<Value, Error> {
     let input: DecompileRequest = serde_json::from_slice(&body)
         .map_err(|error| invalid(format!("Invalid request body: {error}")))?;
     let (package_id, bytecode, linkage_table) = fetch_chain_module(&input).await?;
+    let bytecode_base64 = BASE64.encode(&bytecode);
     let (source, verification) =
         tokio::task::spawn_blocking(move || decompile_verified_bytecode(&bytecode))
             .await?
@@ -138,6 +140,7 @@ async fn handler(request: Request) -> Result<Value, Error> {
         "engine": "rust-move-decompiler",
         "fallback": false,
         "verification": verification,
+        "bytecodeBase64": bytecode_base64,
         "linkageTable": linkage_table
     }))
 }

@@ -1,4 +1,4 @@
-import { tokens } from './relocate-move';
+import { tokens, identifierName } from './relocate-move';
 
 /** Build-only language adaptation; the canonical audit source is kept separately.
  * Acceptance requires comparing the compiled friend table, not assuming that
@@ -10,6 +10,7 @@ export function adaptFriendSyntax(source: string) {
   const friends: string[] = [];
   let moduleId = '';
   const id = (addr:string,name:string) => {
+    name = identifierName(name);
     if (!/^0x[0-9a-fA-F]{1,64}$/.test(addr) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
       throw new Error('Unsupported friend/module identity');
     }

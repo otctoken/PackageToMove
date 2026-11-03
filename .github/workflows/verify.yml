@@ -32,7 +32,7 @@ jobs:
   rust-linux:
     name: Vercel Rust Function Linux build and regression tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: '2'
       CARGO_INCREMENTAL: '0'
@@ -60,3 +60,46 @@ jobs:
         run: cargo +1.96.1 test --locked --target x86_64-unknown-linux-gnu --lib
       - name: Verify vendored decompiler control-flow and expression tests
         run: cargo +1.96.1 test --target x86_64-unknown-linux-gnu --manifest-path tests/decompiler-engine/Cargo.toml --lib
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install pinned official Sui CLI for real Move builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          cli_dir="$RUNNER_TEMP/sui-1.82.3"
+          mkdir -p "$cli_dir"
+          curl --fail --location --retry 3 --output "$cli_dir/sui.tgz" \
+            https://github.com/MystenLabs/sui/releases/download/mainnet-v1.82.3/sui-mainnet-v1.82.3-ubuntu-x86_64.tgz
+          echo "d616d63d90309926cf7f544633c8dd4132f762fdbba555a35c4842cfa4129379  $cli_dir/sui.tgz" | sha256sum --check
+          member="$(tar -tzf "$cli_dir/sui.tgz" | awk '/(^|\/)sui$/')"
+          test -n "$member"
+          test "$(printf '%s\n' "$member" | wc -l)" -eq 1
+          tar -xzf "$cli_dir/sui.tgz" -C "$cli_dir" "$member"
+          mkdir -p "$cli_dir/bin"
+          cp "$cli_dir/$member" "$cli_dir/bin/sui"
+          chmod +x "$cli_dir/bin/sui"
+          "$cli_dir/bin/sui" --version
+          echo "$cli_dir/bin" >> "$GITHUB_PATH"
+      - name: Build bytecode regression tools
+        run: cargo +1.96.1 build --locked --target x86_64-unknown-linux-gnu --bin verify_package --bin compare_project
+      - name: Build and test both exports of the uploaded 37-module authority project
+        env:
+          MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
+        run: npm run test:authority-build -- .research/ci-authority
+      - name: Retain optimizer build and instruction-comparison regression
+        env:
+          MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
+        run: npm run test:optimizer-roundtrip -- .research/ci-optimizer
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: move-project-validation
+          path: |
+            .research/ci-*/**/validation.json
+            .research/ci-*/**/build.log
+            .research/ci-*/**/test.log
+            .research/ci-*/instruction-summary.json
+          if-no-files-found: ignore

@@ -33,6 +33,19 @@ export const moveAclReader = String.raw`export function readMoveAcl(bytes) {
   const modules=table(1,handle),friends=table(15,handle).sort();
   p=base+length; const self=uleb();
   if(!modules[self]) throw new Error('Invalid self module');
-  return {moduleId:modules[self],friends};
+  // No executable or exported type definitions, including no constant pool.
+  // Handles/imports and friend declarations alone are not executable contents.
+  const emptyModule=[6,10,12,17].every(kind=>!tables.get(kind)?.size);
+  return {moduleId:modules[self],friends,emptyModule};
+}
+
+export function compareFriendAcl(actual, expectedFriends, original) {
+  if(JSON.stringify(actual.friends)===JSON.stringify(expectedFriends)) return {identical:true};
+  // Only omission of the entire friend table of a proven EMPTY module is
+  // non-executable metadata. Never apply this rule to modules with functions,
+  // types, constants, added friends, or an unverified original bytecode file.
+  if(original?.emptyModule && actual.emptyModule && expectedFriends.length>0 &&
+     actual.friends.length===0) return {identical:false,emptyModuleMetadataOnly:true};
+  throw new Error('Friend ACL mismatch: '+actual.moduleId+' expected '+JSON.stringify(expectedFriends)+' actual '+JSON.stringify(actual.friends));
 }
 `;

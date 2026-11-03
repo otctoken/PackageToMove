@@ -39,6 +39,8 @@ export function tokens(source: string): Token[] {
 const address = (s: string) => /^0x[0-9a-fA-F]{1,64}$/.test(s) ?
   `0x${s.slice(2).toLowerCase().padStart(64,"0")}` : null;
 
+export const identifierName = (s: string) => /^`[A-Za-z_][A-Za-z0-9_]*`$/.test(s) ? s.slice(1,-1) : s;
+
 export function rootModuleIdentities(sources: Record<string,string>) {
   const identities = new Set<string>();
   for (const [expectedName, source] of Object.entries(sources)) {
@@ -47,7 +49,7 @@ export function rootModuleIdentities(sources: Record<string,string>) {
     if (declarations.length !== 1) throw new Error(`Invalid module declaration: ${expectedName}`);
     const i = declarations[0];
     const addr = address(ts[i+1]?.text ?? "");
-    if (!addr || ts[i+2]?.text !== "::" || ts[i+3]?.text !== expectedName) {
+    if (!addr || ts[i+2]?.text !== "::" || identifierName(ts[i+3]?.text ?? '') !== expectedName) {
       throw new Error(`Module identity mismatch: ${expectedName}`);
     }
     identities.add(`${addr}::${expectedName}`);
@@ -66,7 +68,7 @@ export function relocateMove(source: string, identities: Set<string>, alias: str
       throw new Error("Grouped root imports require explicit module paths before relocation");
     }
     if (addr && ts[i-1]?.text !== "@" && ts[i+1].text === "::" &&
-        identities.has(`${addr}::${ts[i+2].text}`)) edits.push(ts[i]);
+        identities.has(`${addr}::${identifierName(ts[i+2].text)}`)) edits.push(ts[i]);
   }
   for (const t of edits.reverse()) source = source.slice(0,t.start) + alias + source.slice(t.end);
   return source;

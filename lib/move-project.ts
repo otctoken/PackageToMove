@@ -105,10 +105,13 @@ export function moveProjectFiles(
       if (compatibility.changed) files[file] = '// BUILD ADAPTER: audit source and exact friend ACL are retained in audit/ and manifest.json.\n' + files[file];
       const auditSourceFile = `${prefix}audit/sources/${mod.name}.move`;
       files[auditSourceFile] = source;
+      const bytecodeBase64 = metadata[key]?.bytecodeBase64;
+      const originalBytecodeFile = bytecodeBase64 ? `${prefix}bytecode/${mod.name}.mv.base64` : undefined;
+      if (originalBytecodeFile) files[originalBytecodeFile] = bytecodeBase64!;
       const buildIdentity = (id: string) => relocated && rootIdentities.has(id) ?
         `0x${'0'.repeat(64)}::${id.split('::')[1]}` : id;
       if (mod.disassembly) files[`${prefix}bytecode/${mod.name}.mv.disasm`] = mod.disassembly;
-      return { name: mod.name, file, auditSourceFile, relocated,
+      return { name: mod.name, file, auditSourceFile, originalBytecodeFile, relocated,
         friendSyntaxAdapted:compatibility.changed, compiledModuleId:buildIdentity(compatibility.moduleId),
         expectedCompiledFriends:compatibility.expectedFriends.map(buildIdentity).sort(),
         verificationAppliesTo: "auditSourceFile", verification };
@@ -174,8 +177,12 @@ explicitly marked 2024 BUILD ADAPTER using public(package). The unmodified audit
 view stays in audit/sources/ (and dependencies/<id>/audit/sources/). Consult each
 module's auditSourceFile in manifest.json. Do NOT assume these permissions are
 equivalent: verify.mjs compares EVERY recompiled module's friend list against the
-original list, failing on additions, removals, or missing modules. Only that check
-can establish friend-table agreement for this exact build, not full equivalence.
+original list. Additions, missing modules, and changes in nonempty modules fail.
+The sole normalization is removal of friend metadata from a module proven EMPTY
+by both original (SHA-256-checked) and rebuilt bytecode: no functions, types, or
+constants. Such differences are reported explicitly with friendTablesIdentical=false.
+Use node verify.mjs --require-exact-metadata to reject these differences too.
+This does not establish semantic equivalence or upgrade compatibility.
 Addresses 0x1 through 0x8 are excluded from decompilation. std/sui are implicit
 official toolchain dependencies; 0x3 uses system = "sui_system". 0x5..0x8 are
 objects, not packages. No package mapping is invented for 0x4.
@@ -187,7 +194,7 @@ Run locally with a compatible Sui CLI:
 
     node verify.mjs
 
-This runs sui move build, exact friend-table comparison, and sui move test; it writes build.log/test.log and
+This runs sui move build, the friend-table checks described above, and sui move test; it writes build.log/test.log and
 validation.json, and exits nonzero on failure. It NEVER publishes or upgrades.
 In new-package mode it also generates publish-input.json offline with
 --dump-bytecode-as-base64 --no-tree-shaking, checking that only root modules and

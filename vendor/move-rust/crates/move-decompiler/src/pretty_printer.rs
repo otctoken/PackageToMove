@@ -1,6 +1,6 @@
 // Copyright (c) The Move Contributors SPDX-License-Identifier: Apache-2.0
 
-use crate::ast::{self, Datatype, Enum, Exp, Function, Struct, Type, Variant};
+use crate::ast::{self, Datatype, Enum, Exp, Function, Struct, Type, Variant, source_identifier};
 
 use move_binary_format::{
     file_format::{AbilitySet, DatatypeTyParameter, Visibility},
@@ -21,6 +21,14 @@ use indexmap::IndexMap;
 struct Context {
     constant_table: IndexMap<*const Constant<Symbol>, String>,
     mutable_locals: std::collections::BTreeSet<String>,
+    variant_fields: std::collections::BTreeSet<(String, Symbol)>,
+}
+
+/// Bytecode retains field/function names from older editions. Escape keyword
+/// collisions instead of renaming fields or changing callable function symbols.
+/// Keep this list aligned with move-compiler's parser/lexer.rs get_name_token.
+fn identifier_doc(name: &str) -> Doc {
+    D::text(source_identifier(name))
 }
 
 impl Context {
@@ -72,6 +80,8 @@ pub fn module<S: SourceKind>(
         Context {
             constant_table,
             mutable_locals: Default::default(),
+            variant_fields: module.enums.values().flat_map(|e| e.variants.iter()
+                .filter(|v| !v.fields.is_empty()).map(|v| (e.name.to_string(), v.name))).collect(),
         }
     };
 
@@ -99,7 +109,7 @@ pub fn module<S: SourceKind>(
         .concat(D::text("module"))
         .concat_space(D::text(pkg_name))
         .concat(D::text("::"))
-        .concat(D::text(name.as_str()))
+        .concat(identifier_doc(name.as_str()))
         .concat(D::text(";"))
         .concat(D::line())
         .concat(D::line());
@@ -107,7 +117,7 @@ pub fn module<S: SourceKind>(
     // Friend declarations are part of bytecode access control. Do not broaden
     // public(friend) to public(package) just to satisfy a newer compiler.
     for friend in &model_mod.compiled().friends {
-        doc = doc.concat(D::text(format!("friend {friend};"))).concat(D::line());
+        doc = doc.concat(D::text(format!("friend {};", ast::ModuleRef::Qualified(*friend)))).concat(D::line());
     }
 
     if !uses.is_empty() || !type_uses.is_empty() {
@@ -116,18 +126,20 @@ pub fn module<S: SourceKind>(
             .concat(D::line())
             .concat(D::line());
         for (mid, alias) in uses {
+            let path = ast::ModuleRef::Qualified(*mid);
             let line = if *alias == mid.name {
-                format!("use {mid};")
+                format!("use {path};")
             } else {
-                format!("use {mid} as {alias};")
+                format!("use {path} as {};", source_identifier(alias.as_str()))
             };
             doc = doc.concat(D::text(line)).concat(D::line());
         }
         for ((mid, type_name), alias) in type_uses {
+            let path = ast::TypeRef::Qualified(ast::ModuleRef::Qualified(*mid), *type_name);
             let line = if alias == type_name {
-                format!("use {mid}::{type_name};")
+                format!("use {path};")
             } else {
-                format!("use {mid}::{type_name} as {alias};")
+                format!("use {path} as {};", source_identifier(alias.as_str()))
             };
             doc = doc.concat(D::text(line)).concat(D::line());
         }
@@ -280,6 +292,7 @@ fn function(context: &Context, fun: &Function) -> Doc {
     let function_context = Context {
         constant_table: context.constant_table.clone(),
         mutable_locals,
+        variant_fields: context.variant_fields.clone(),
     };
     let context = &function_context;
     let header = fun_header_doc(context, fun);
@@ -394,7 +407,7 @@ fn fun_header_doc(context: &Context, fun: &Function) -> Doc {
         D::intersperse(prefix_parts, D::space()).concat(D::space())
     };
 
-    let name_doc = D::text("fun").concat_space(D::text(name.as_str()));
+    let name_doc = D::text("fun").concat_space(identifier_doc(name.as_str()));
 
     let tparams_doc = if type_parameters.is_empty() {
         D::nil()
@@ -555,7 +568,7 @@ fn struct_doc(s: &Struct) -> Doc {
         .unwrap_or(D::nil());
 
     D::text("public struct")
-        .concat_space(D::text(name.as_str()))
+        .concat_space(identifier_doc(name.as_str()))
         .concat(tparams)
         .group()
         .concat(abilities_doc)
@@ -595,7 +608,7 @@ fn enum_doc(e: &Enum) -> Doc {
     );
 
     D::text("public enum")
-        .concat_space(D::text(name.as_str()))
+        .concat_space(identifier_doc(name.as_str()))
         .concat(tparams)
         .group()
         .concat(abilities_doc)
@@ -610,9 +623,9 @@ fn enum_doc(e: &Enum) -> Doc {
 fn variant_doc(v: &Variant) -> Doc {
     let Variant { name, fields } = v;
     if fields.is_empty() {
-        D::text(name.as_str())
+        identifier_doc(name.as_str())
     } else {
-        D::text(name.as_str()).concat_space(fields_doc(fields))
+        identifier_doc(name.as_str()).concat_space(fields_doc(fields))
     }
 }
 
@@ -627,7 +640,7 @@ fn fields_doc(fields: &[(Symbol, Type)]) -> Doc {
     let items: Vec<Doc> = fields
         .iter()
         .map(|(name, ty)| {
-            D::text(name.as_str())
+            identifier_doc(name.as_str())
                 .concat(D::text(":"))
                 .concat_space(type_doc(ty))
         })
@@ -789,9 +802,9 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
             }
             Exp::Call(target, args) => {
                 let head = if target.module.is_builtin() {
-                    D::text(format!("{}", target.function))
+                    identifier_doc(target.function.as_str())
                 } else {
-                    D::text(format!("{}::{}", target.module, target.function))
+                    D::text(format!("{}::", target.module)).concat(identifier_doc(target.function.as_str()))
                 };
                 let head = if target.type_arguments.is_empty() {
                     head
@@ -842,7 +855,10 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
             Exp::Switch(subject, enum_ty, arms) => {
                 let arms_doc = Doc::intersperse(
                     arms.iter().map(|(variant, body)| {
-                        D::text(format!("{enum_ty}::{variant}"))
+                        D::text(format!("{enum_ty}::{}", source_identifier(variant.as_str())))
+                            .concat(if context.variant_fields.contains(&(enum_ty.to_string(), *variant)) {
+                                D::text(" { .. }")
+                            } else { D::nil() })
                             .concat_space(D::text("=>"))
                             .concat_space(e_block(context, body))
                     }),
@@ -855,11 +871,11 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
             Exp::Match(subject, enum_ty, arms) => {
                 let arms_doc = Doc::intersperse(
                     arms.iter().map(|(variant, fields, body)| {
-                        let mut pat = D::text(format!("{enum_ty}::{variant}"));
+                        let mut pat = D::text(format!("{enum_ty}::{}", source_identifier(variant.as_str())));
                         if !fields.is_empty() {
                             let field_doc = Doc::intersperse(
                                 fields.iter().map(|(sym, name)| {
-                                    D::text(format!("{sym}: ")).concat(context.binding(name))
+                                    identifier_doc(sym.as_str()).concat(D::text(": ")).concat(context.binding(name))
                                 }),
                                 D::text(", "),
                             );
@@ -867,6 +883,8 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
                                 .concat_space(D::text("{"))
                                 .concat_space(field_doc)
                                 .concat_space(D::text("}"));
+                        } else if context.variant_fields.contains(&(enum_ty.to_string(), *variant)) {
+                            pat = pat.concat(D::text(" { .. }"));
                         }
                         pat.concat_space(D::text("=>"))
                             .concat_space(e_block(context, body))
@@ -918,7 +936,7 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
                 };
                 let rhs = D::text(rhs_prefix).concat(recur(context, exp));
                 D::text("let")
-                    .concat_space(D::text(format!("{enum_ty}::{variant}")))
+                    .concat_space(D::text(format!("{enum_ty}::{}", source_identifier(variant.as_str()))))
                     .concat_space(items_doc)
                     .concat_space(D::text("="))
                     .concat_space(rhs)
@@ -1041,7 +1059,7 @@ fn fields(context: &Context, fields: &[(Symbol, String)]) -> Doc {
     };
     let doc = D::intersperse(
         fields.iter().map(|(name, ty)| {
-            D::text(name.as_str())
+            identifier_doc(name.as_str())
                 .concat(D::text(":"))
                 .concat_space(context.binding(ty))
         }),
@@ -1081,7 +1099,7 @@ fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
                 args: inner,
             } => maybe_parens(context, &inner[0])
                 .concat(D::text("."))
-                .concat(D::text(field_ref.field.name.as_str())),
+                .concat(identifier_doc(field_ref.field.name.as_str())),
             Exp::Data {
                 op: DataOp::VecImmBorrow(_) | DataOp::VecMutBorrow(_),
                 args: inner,
@@ -1101,12 +1119,12 @@ fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
         DataOp::MutBorrowField(field_ref) => D::text("&mut ")
             .concat(maybe_parens(context, &args[0]))
             .concat(D::text("."))
-            .concat(D::text(field_ref.field.name.as_str())),
+            .concat(identifier_doc(field_ref.field.name.as_str())),
 
         DataOp::ImmBorrowField(field_ref) => D::text("&")
             .concat(maybe_parens(context, &args[0]))
             .concat(D::text("."))
-            .concat(D::text(field_ref.field.name.as_str())),
+            .concat(identifier_doc(field_ref.field.name.as_str())),
 
         DataOp::VecPack(_) => D::text("vector[")
             .concat(exp_list(context, args))
@@ -1145,13 +1163,13 @@ fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
             assert!(fields.len() == args.len());
             let enum_name = variant.enum_.name;
             let variant_name = variant.variant.name;
-            D::text(format!("{enum_name}::{variant_name}")).concat_space(if fields.is_empty() {
+            D::text(format!("{}::{}", source_identifier(enum_name.as_str()), source_identifier(variant_name.as_str()))).concat_space(if fields.is_empty() {
                 D::nil()
             } else {
                 D::space()
                     .concat(D::intersperse(
                         fields.iter().zip(args.iter()).map(|((name, _ty), e)| {
-                            D::text(name.as_str())
+                            identifier_doc(name.as_str())
                                 .concat(D::text(":"))
                                 .concat_space(exp(context, e))
                         }),
@@ -1166,13 +1184,13 @@ fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
             let fields = &struct_.struct_.fields.0;
             assert!(fields.len() == args.len());
             let struct_name = struct_.struct_.name;
-            D::text(format!("{struct_name}")).concat_space(if fields.is_empty() {
+            identifier_doc(struct_name.as_str()).concat_space(if fields.is_empty() {
                 D::nil().braces()
             } else {
                 D::space()
                     .concat(D::intersperse(
                         fields.iter().zip(args.iter()).map(|((name, _ty), e)| {
-                            D::text(name.as_str())
+                            identifier_doc(name.as_str())
                                 .concat(D::text(":"))
                                 .concat_space(exp(context, e))
                         }),
@@ -1361,6 +1379,7 @@ mod primitive_op_tests {
         let context = Context {
             constant_table: IndexMap::new(),
             mutable_locals: Default::default(),
+            variant_fields: Default::default(),
         };
         exp(&context, e).render(100)
     }

@@ -18,7 +18,8 @@ fn main() {
         eprintln!("{}: {} functions: {}", node["name"], names.len(), names.join(", "));
         match sui_scope_rust::decompile_verified_bytecode(&bytes) {
             Ok((source, verification)) => println!("RESULT {}", serde_json::json!({
-                "name":node["name"], "source":source, "verification":verification
+                "name":node["name"], "source":source, "verification":verification,
+                "bytecodeBase64": node["bytes"]
             })),
             Err(error) => { eprintln!("{error}"); std::process::exit(1); }
         }

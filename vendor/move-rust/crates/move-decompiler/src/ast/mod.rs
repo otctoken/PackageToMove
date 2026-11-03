@@ -187,11 +187,22 @@ impl ModuleRef {
     }
 }
 
+/// Preserve bytecode symbols when emitting Move 2024 source. Keywords can be
+/// identifiers in older bytecode; escaping must apply to every path component.
+pub(crate) fn source_identifier(name: &str) -> String {
+    if matches!(name,
+        "abort" | "acquires" | "as" | "break" | "const" | "continue" | "copy"
+        | "else" | "false" | "fun" | "friend" | "if" | "let" | "loop" | "module"
+        | "move" | "native" | "public" | "return" | "struct" | "true" | "use"
+        | "while" | "mut" | "enum" | "type" | "match" | "for"
+    ) { format!("`{name}`") } else { name.to_owned() }
+}
+
 impl std::fmt::Display for ModuleRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ModuleRef::Qualified(mid) => write!(f, "{mid}"),
-            ModuleRef::Aliased(name) => write!(f, "{name}"),
+            ModuleRef::Qualified(mid) => write!(f, "0x{}::{}", mid.address.short_str_lossless(), source_identifier(mid.name.as_str())),
+            ModuleRef::Aliased(name) => write!(f, "{}", source_identifier(name.as_str())),
             ModuleRef::Builtin => Ok(()),
         }
     }
@@ -209,8 +220,8 @@ pub enum TypeRef {
 impl std::fmt::Display for TypeRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TypeRef::Qualified(mr, name) => write!(f, "{mr}::{name}"),
-            TypeRef::Aliased(name) => write!(f, "{name}"),
+            TypeRef::Qualified(mr, name) => write!(f, "{mr}::{}", source_identifier(name.as_str())),
+            TypeRef::Aliased(name) => write!(f, "{}", source_identifier(name.as_str())),
         }
     }
 }

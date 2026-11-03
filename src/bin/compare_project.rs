@@ -66,6 +66,7 @@ fn main() {
     let mut modules = 0;
     let mut differences = vec![];
     let mut matched = 0;
+    let mut empty_module_metadata_differences = vec![];
     for node in fixture["data"]["object"]["package"]["modules"]["nodes"]
         .as_array()
         .unwrap()
@@ -86,7 +87,13 @@ fn main() {
         let mut bf = b.friends.clone();
         af.sort();
         bf.sort();
-        assert_eq!(af, bf, "Friend ACL changed");
+        if af != bf {
+            let empty = |m: &CompiledModule| m.function_defs.is_empty() && m.struct_defs.is_empty()
+                && m.enum_defs.is_empty() && m.constant_pool.is_empty();
+            assert!(empty(&original) && empty(rebuilt) && bf.is_empty(), "Friend ACL changed in a nonempty module");
+            empty_module_metadata_differences.push(serde_json::json!({"module":a.id.to_string(),"originalFriends":af.iter().map(ToString::to_string).collect::<Vec<_>>(),"compiledFriends":bf.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "scope":"Empty module only; no functions, types or constants. Exact metadata and upgrade compatibility are not verified."}));
+        }
         assert_eq!(a.structs.len(), b.structs.len());
         assert_eq!(a.enums.len(), b.enums.len());
         for (name, s) in &a.structs {
@@ -147,6 +154,8 @@ fn main() {
         "{}",
         serde_json::json!({"modules":modules,"functions":functions,
         "interfacesAndLayoutsMatch":true,"normalizedFunctionBodiesIdentical":identical,
+        "friendTablesIdentical":empty_module_metadata_differences.is_empty(),
+        "emptyModuleMetadataDifferences":empty_module_metadata_differences,
         "additionalBodiesMatchedUnderModel":matched,
         "unverifiedBodies":functions-identical-matched,
         "instructionModel":"paired-instruction-v1-experimental",

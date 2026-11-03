@@ -59,12 +59,14 @@ export type BytecodeVerification = {
 };
 
 export type DecompileMetadata = {
+  bytecodeBase64?: string;
   engine: "rust-move-decompiler";
   fallback: false;
   verification: BytecodeVerification;
 };
 
 export type RustDecompileResponse = {
+  bytecodeBase64?: string;
   packageVersion?: number;
   packageId: string;
   module: string;

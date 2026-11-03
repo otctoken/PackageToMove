@@ -309,6 +309,7 @@ export default function Home() {
             engine: payload.engine,
             fallback: false,
             verification: payload.verification,
+            bytecodeBase64: payload.bytecodeBase64,
           },
         }));
         return;
@@ -460,6 +461,7 @@ export default function Home() {
               engine: payload.engine,
               fallback: false,
               verification: payload.verification,
+              bytecodeBase64: payload.bytecodeBase64,
             };
           }
         } catch (cause) {

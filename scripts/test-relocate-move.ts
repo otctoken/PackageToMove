@@ -24,3 +24,6 @@ assert.throws(()=>rootModuleIdentities({m:source+'/*'}),/Unterminated/);
 assert.throws(()=>rootModuleIdentities({m:source+'module 0xabc::m;'}),/Invalid module/);
 assert.throws(()=>relocateMove('use 0xabc::{m, external};',ids,'NewPackage'),/Grouped root imports/);
 console.log('Move relocation preserves literals, comments, and dependency identities.');
+const quoted = 'module 0xabc::`for`; use 0xabc::`for`; public fun `fun`() { 0xabc::`for`::`match`(); }';
+const quotedIds = rootModuleIdentities({for:quoted});
+assert.equal(relocateMove(quoted,quotedIds,'NewPackage'),quoted.replaceAll('0xabc::','NewPackage::'));

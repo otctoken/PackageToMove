@@ -2,20 +2,20 @@
 export const projectVerifier = String.raw`import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readMoveAcl } from './move-acl.mjs';
+import { readMoveAcl, compareFriendAcl } from './move-acl.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 function digest() {
   const hash = createHash('sha256');
   function visit(dir, relative = '') {
     for (const entry of readdirSync(dir, {withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))) {
-      if (['build','.git','bytecode'].includes(entry.name)) continue;
+      if (['build','.git'].includes(entry.name)) continue;
       if (entry.isSymbolicLink()) throw new Error('Symlinks are not supported');
       const name = relative + entry.name;
       if (entry.isDirectory()) visit(join(dir,entry.name), name+'/');
-      else if (entry.name.endsWith('.move') || ['Move.toml','Published.toml','manifest.json'].includes(entry.name)) {
+      else if (entry.name.endsWith('.move') || entry.name.endsWith('.mv.base64') || ['Move.toml','Published.toml','manifest.json'].includes(entry.name)) {
         hash.update(name); hash.update('\0'); hash.update(readFileSync(join(dir,entry.name))); hash.update('\0');
       }
     }
@@ -24,6 +24,8 @@ function digest() {
 }
 const report = {startedAt:new Date().toISOString(), inputSha256:null, buildPassed:false,
   validationPassed:false, friendAclPassed:false,
+  friendTablesIdentical:true, emptyModuleMetadataDifferences:[],
+  metadataPolicy:process.argv.includes('--require-exact-metadata')?'exact':'empty-module-omission-v1',
   testCommandPassed:false, testCount:null, businessTestsVerified:false,
   publishInputGenerated:false,
   semanticEquivalenceVerified:false, publishVerified:false, steps:[]};
@@ -61,8 +63,24 @@ try {
       collect(join(root,'build'));
       for(const pkg of manifest.packages) for(const mod of pkg.modules) {
         const actual=compiled.get(mod.compiledModuleId);
-        if(!actual || JSON.stringify(actual.friends)!==JSON.stringify(mod.expectedCompiledFriends)) {
-          throw new Error('Friend ACL mismatch: '+mod.compiledModuleId+' expected '+JSON.stringify(mod.expectedCompiledFriends)+' actual '+JSON.stringify(actual?.friends));
+        if(!actual) throw new Error('Missing compiled module: '+mod.compiledModuleId);
+        let original;
+        if(mod.originalBytecodeFile) {
+          const path=resolve(root,mod.originalBytecodeFile), rel=relative(root,path);
+          if(rel.startsWith('..')||isAbsolute(rel)) throw new Error('Invalid original bytecode path');
+          const bytes=Buffer.from(readFileSync(path,'utf8').trim(),'base64');
+          if(createHash('sha256').update(bytes).digest('hex')!==mod.verification.bytecodeSha256) throw new Error('Original bytecode hash mismatch');
+          original=readMoveAcl(bytes);
+          if(original.moduleId!==pkg.originalId+'::'+mod.name) throw new Error('Original bytecode identity mismatch');
+          const expectedOriginal=mod.expectedCompiledFriends.map(id=>mod.relocated&&id.startsWith('0x'+'0'.repeat(64)+'::') ? pkg.originalId+id.slice(66) : id).sort();
+          if(JSON.stringify(original.friends)!==JSON.stringify(expectedOriginal)) throw new Error('Original friend table differs from manifest');
+        }
+        const acl=compareFriendAcl(actual,mod.expectedCompiledFriends,original);
+        if(!acl.identical) {
+          report.friendTablesIdentical=false;
+          report.emptyModuleMetadataDifferences.push({module:mod.compiledModuleId,originalFriends:mod.expectedCompiledFriends,compiledFriends:actual.friends,
+            reason:'Only friend metadata removed from a bytecode-verified empty module; no functions, types or constants. Upgrade compatibility not verified.'});
+          if(report.metadataPolicy==='exact') throw new Error('Exact friend metadata required: '+mod.compiledModuleId);
         }
       }
       report.friendAclPassed=true;
@@ -97,6 +115,7 @@ try {
   if (digest() !== report.inputSha256) throw new Error('Sources changed during validation');
   report.validationPassed = true;
   console.log('Build and test commands passed. This is NOT semantic-equivalence or publication verification.');
+  if(!report.friendTablesIdentical) console.log('Empty-module friend metadata differs; see emptyModuleMetadataDifferences. Exact metadata and upgrade compatibility are NOT verified.');
   if (!report.testCount) console.log('No business test cases were verified. Add tests before publication.');
 } catch (error) {
   report.error = String(error);

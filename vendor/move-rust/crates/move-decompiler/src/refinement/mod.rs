@@ -7,6 +7,8 @@ mod bool_if_simplify;
 mod collapse_let_usage;
 mod collect_uses;
 mod dedupe_freeze;
+mod enum_unpack_patterns;
+mod exhaustive_guard_pair;
 mod flatten_seq;
 mod fuse_let;
 mod hoist_arm_assignments;
@@ -39,6 +41,7 @@ pub type Refinement = fn(&mut Exp) -> bool;
 
 const REFINEMENTS: &[Refinement] = &[
     flatten_seq::refine,
+    exhaustive_guard_pair::refine,
     fuse_let::refine,
     hoist_arm_assignments::refine,
     lift_terminating_arm::refine,
@@ -46,6 +49,7 @@ const REFINEMENTS: &[Refinement] = &[
     hoist_tail_continue::refine,
     introduce_while::refine,
     loop_to_seq::refine,
+    enum_unpack_patterns::refine,
     reconstruct_match::refine,
     // Strip spurious trailing `continue`/`return` markers first - they're structurer
     // artifacts that would otherwise make `simplify_if`'s `always_terminates` predicate

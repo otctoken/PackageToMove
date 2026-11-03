@@ -114,10 +114,16 @@ fn rendered_call_counts(source: &str) -> (usize, usize) {
         }
 
         let mut end = cursor + 2;
+        let quoted = bytes.get(end) == Some(&b'`');
+        if quoted { end += 1; }
+        let name_start = end;
         while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
             end += 1;
         }
-        if end == cursor + 2 {
+        let name_end = end;
+        if quoted && bytes.get(end) == Some(&b'`') { end += 1; }
+        else if quoted { cursor = end; continue; }
+        if name_end == name_start {
             cursor += 2;
             continue;
         }
@@ -150,7 +156,7 @@ fn rendered_call_counts(source: &str) -> (usize, usize) {
         // instruction, not a Call/CallGeneric instruction, so it must not
         // inflate ordinary call coverage.
         let is_empty_vec_unpack = bytes[..cursor].ends_with(b"std::vector")
-            && &bytes[cursor + 2..end] == b"destroy_empty";
+            && &bytes[name_start..name_end] == b"destroy_empty";
         if next < bytes.len() && bytes[next] == b'(' && !is_empty_vec_unpack {
             call_count += 1;
             generic_call_count += usize::from(generic);
@@ -231,7 +237,8 @@ fn rendered_function_sections(source: &str) -> (usize, String) {
             break;
         };
         let start = cursor + relative;
-        let before_is_identifier = start > 0 && is_identifier_byte(bytes[start - 1]);
+        // `fun` can also be an escaped module, field or function identifier.
+        let before_is_identifier = start > 0 && (is_identifier_byte(bytes[start - 1]) || bytes[start - 1] == b'`');
         let after_is_identifier = start + 3 < bytes.len() && is_identifier_byte(bytes[start + 3]);
         if before_is_identifier || after_is_identifier {
             cursor = start + 3;
@@ -392,6 +399,7 @@ fn inspect_bytecode(
         .filter_map(|line| line.split_once("fun "))
         .map(|(_, rest)| {
             rest.trim_start()
+                .trim_start_matches('`')
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect()
@@ -764,6 +772,62 @@ mod tests {
                     assert!(body.contains(&format!("*(&mut {name}.package) = x2_package::upgrade_package(l1)")));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn authority_project_preserves_keyword_field_names() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/authority-project.json")).unwrap();
+        let mut modules = 0;
+        let mut authority_seen = false;
+        for package in fixture["packages"].as_array().unwrap() {
+            for node in package["chain"]["data"]["object"]["package"]["modules"]["nodes"].as_array().unwrap() {
+                let bytes = BASE64.decode(node["bytes"].as_str().unwrap()).unwrap();
+                let (source, verification) = decompile_verified_bytecode(&bytes).unwrap();
+                assert!(verification.audit_warnings.is_empty());
+                if node["name"] == "authority" && package["package"]["id"] == "0x4e2df80a5e2fd0392878298c51ce15164222111ccea05504b9291b158f552677" {
+                    authority_seen = true;
+                    assert!(source.contains("`for`: ID"), "Keep the original field name in the struct layout");
+                    assert!(source.contains("`for`: reg_"), "Escape destructuring fields");
+                    assert!(source.contains(".`for`"), "Escape field access");
+                    assert!(source.contains("fun `for`<"), "Escape function definitions without renaming");
+                    assert!(!source.contains(" for:"));
+                }
+                modules += 1;
+            }
+        }
+        assert!(authority_seen);
+        assert_eq!(modules, 37);
+    }
+
+    #[test]
+    fn quoted_function_names_still_count_as_calls() {
+        assert_eq!(rendered_call_counts("authority::`for`<T0, T1>(cap); helper::`match`(v);"), (2, 1));
+        assert_eq!(rendered_call_counts("authority::`for`<vector<u8>>(cap)"), (1, 1));
+        let (n, bodies) = rendered_function_sections("module 0x1::`fun`; public struct Cap { `fun`: u64 } public fun `fun`() { 0x1::`fun`::`fun`(); }");
+        assert_eq!(n, 1);
+        assert_eq!(rendered_call_counts(&bodies), (1, 0));
+    }
+
+    #[test]
+    fn keyword_collisions_preserve_symbols_and_coverage() {
+        let fixture: Value = serde_json::from_str(include_str!("../tests/fixtures/authority-project.json")).unwrap();
+        let package = fixture["packages"].as_array().unwrap().iter().find(|p|
+            p["package"]["id"] == "0x4e2df80a5e2fd0392878298c51ce15164222111ccea05504b9291b158f552677").unwrap();
+        let bytes = BASE64.decode(package["chain"]["data"]["object"]["package"]["modules"]["nodes"][0]["bytes"].as_str().unwrap()).unwrap();
+        for keyword in ["abort", "acquires", "as", "break", "const", "continue", "copy",
+            "else", "false", "fun", "friend", "if", "let", "loop", "module", "move", "native",
+            "public", "return", "struct", "true", "use", "while", "mut", "enum", "type", "match", "for"] {
+            let mut module = CompiledModule::deserialize_with_defaults(&bytes).unwrap();
+            let name = module.identifiers.iter_mut().find(|s| s.as_str() == "for").unwrap();
+            *name = keyword.parse().unwrap();
+            let mut renamed = vec![];
+            module.serialize_with_version(module.version, &mut renamed).unwrap();
+            let (source, verification) = decompile_verified_bytecode(&renamed).unwrap_or_else(|e| panic!("{keyword}: {e}"));
+            assert!(verification.audit_warnings.is_empty(), "{keyword}");
+            assert!(source.contains(&format!("`{keyword}`: ID")), "{keyword}");
+            assert!(source.contains(&format!("fun `{keyword}`<")), "{keyword}");
         }
     }
 
