@@ -93,6 +93,12 @@ jobs:
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
         run: npm run test:optimizer-roundtrip -- .research/ci-optimizer
+      - name: Preserve all explicit friend permissions in the uploaded events project
+        env:
+          MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
+        run: npm run test:friend-events-build -- .research/ci-friend-events
+      - name: Reject a removed unused friend even when compilation succeeds
+        run: npx tsx scripts/test-friend-acl-tamper.ts .research/ci-friend-events/audit
       - name: Compare the complete 38-module efbfd project
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug

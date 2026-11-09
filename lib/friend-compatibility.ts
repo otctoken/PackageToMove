@@ -4,7 +4,7 @@ import { tokens, identifierName } from './relocate-move';
  * Acceptance requires comparing the compiled friend table, not assuming that
  * public(package) has the same permissions as public(friend).
  */
-export function adaptFriendSyntax(source: string) {
+export function adaptFriendSyntax(source: string, preserveExplicitFriends = false) {
   const ts = tokens(source);
   const changes: Array<{start:number;end:number;text:string}> = [];
   const friends: string[] = [];
@@ -22,10 +22,10 @@ export function adaptFriendSyntax(source: string) {
     }
     if (ts[i].text === 'friend' && ts[i+2]?.text === '::' && ts[i+4]?.text === ';') {
       friends.push(id(ts[i+1].text,ts[i+3].text));
-      changes.push({start:ts[i].start,end:ts[i+4].end,text:'/* Original friend declaration retained in audit source and manifest. */'});
+      if (!preserveExplicitFriends) changes.push({start:ts[i].start,end:ts[i+4].end,text:'/* Original friend declaration retained in audit source and manifest. */'});
     }
     if (ts[i].text === 'public' && ts[i+1]?.text === '(' && ts[i+2]?.text === 'friend' && ts[i+3]?.text === ')') {
-      changes.push({start:ts[i+2].start,end:ts[i+2].end,text:'package'});
+      if (!preserveExplicitFriends) changes.push({start:ts[i+2].start,end:ts[i+2].end,text:'package'});
     }
   }
   if (!moduleId) throw new Error('Missing module identity');

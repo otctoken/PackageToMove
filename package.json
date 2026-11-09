@@ -14,6 +14,8 @@
     "test:optimizer-roundtrip": "tsx scripts/test-optimizer-roundtrip.ts",
     "test:authority-roundtrip": "tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/authority-project.json",
     "test:authority-build": "tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/authority-project.json --build-only",
+    "test:friend-events-build": "tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/friend-events-project.json --build-only",
+    "test:friend-events-roundtrip": "tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/friend-events-project.json",
     "verify:official-source": "tsx scripts/verify-official-source.ts"
   },
   "engines": {

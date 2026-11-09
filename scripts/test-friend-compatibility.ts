@@ -34,7 +34,7 @@ async function main() {
     assert.equal(original.emptyModule,true);
     assert(original.friends.length>0);
     const empty={...original,friends:[]};
-    assert.deepEqual(compareFriendAcl(empty,original.friends,original),{identical:false,emptyModuleMetadataOnly:true});
+    assert.throws(()=>compareFriendAcl(empty,original.friends,original),/mismatch/);
     assert.throws(()=>compareFriendAcl({...empty,emptyModule:false},original.friends,original),/mismatch/);
     assert.throws(()=>compareFriendAcl(empty,original.friends,{...original,emptyModule:false}),/mismatch/);
     assert.throws(()=>compareFriendAcl(empty,original.friends,undefined),/mismatch/);

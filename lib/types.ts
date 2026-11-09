@@ -39,6 +39,8 @@ export type AnalyzeResult = {
 };
 
 export type BytecodeVerification = {
+  friendFunctions?: string[];
+  calledFunctions?: string[];
   canonicalInput: "sui-chain-bytecode";
   auditPolicy: "fail-closed-v1";
   bytecodeSha256: string;
@@ -59,6 +61,7 @@ export type BytecodeVerification = {
 };
 
 export type DecompileMetadata = {
+  legacySource?: string | null;
   bytecodeBase64?: string;
   engine: "rust-move-decompiler";
   fallback: false;
@@ -66,6 +69,7 @@ export type DecompileMetadata = {
 };
 
 export type RustDecompileResponse = {
+  legacySource?: string | null;
   bytecodeBase64?: string;
   packageVersion?: number;
   packageId: string;

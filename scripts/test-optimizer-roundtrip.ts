@@ -45,7 +45,7 @@ for (const pkg of packages) {
     assert.equal(hash, pkg.modules.find(n => n.name === m.name)?.bytecodeSha256);
     const key = `${pkg.id}::${m.name}`;
     sources[key] = m.source;
-    metadata[key] = {engine:'rust-move-decompiler', fallback:false, verification:m.verification, bytecodeBase64:m.bytecodeBase64};
+    metadata[key] = {engine:'rust-move-decompiler', fallback:false, verification:m.verification, bytecodeBase64:m.bytecodeBase64, legacySource:m.legacySource};
   }
   console.log(`${pkg.id}: ${results.length} modules covered`);
 }
@@ -61,6 +61,8 @@ for (const mode of ['audit', 'new-package'] as const) {
   const validation = JSON.parse(readFileSync(join(project, 'validation.json'), 'utf8'));
   assert.equal(validation.validationPassed, true);
   assert.equal(validation.friendAclPassed, true);
+  assert.equal(validation.friendTablesIdentical, true);
+  assert.deepEqual(validation.friendAclDifferences, []);
   assert.equal(validation.businessTestsVerified, false);
   assert.equal(validation.publishInputGenerated,mode==='new-package');
 }

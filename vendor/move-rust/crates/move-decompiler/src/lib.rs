@@ -3,6 +3,7 @@
 
 pub mod ast;
 mod refinement;
+mod legacy_control_flow;
 mod structuring;
 
 pub mod config;
@@ -132,6 +133,12 @@ fn generate_module<S: SourceKind>(
     let doc = pretty_printer::module(model, pkg_name, model_mod, module)?;
 
     let output = doc.render(100);
+    // A second rendering of the SAME refined AST, without changing instructions,
+    // declarations or visibility. Packages can preserve explicit friend ACLs in
+    // legacy edition instead of inferring them from public(package) call sites.
+    if let Some(legacy) = pretty_printer::legacy_module(model, pkg_name, model_mod, module)? {
+        std::fs::write(path.with_extension("legacy.move"), legacy.render(100))?;
+    }
     println!("- {}", path.display());
     let _ = std::fs::remove_file(path); // ignore error if file does not exist
     std::fs::write(path, output)?;

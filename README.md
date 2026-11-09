@@ -27,7 +27,9 @@ Download All 默认选择“新包构建版”，也可选择保留链上地址�
 涉及 `friend` 与 2024 语法混用时，`sources/` 为明确标注的构建适配副本，
 未改动的审计视图保存在每个模块的 `auditSourceFile` 路径。`verify.mjs` 会
 逐模块比较重编译 friend 列表，增删或缺失均失败；不能直接认为
-`public(package)` 与 `public(friend)` 等价。详见 [efbfd 回归记录](docs/efbfd-regression.md)。
+`public(package)` 与 `public(friend)` 等价。存在未使用的显式 friend 时，优先由同一语法树
+输出 legacy 语法以保留声明。默认权限校验不允许空模块例外。
+详见 [friend 修复记录](docs/friend-events-regression.md)。
 
 - Mainnet / Testnet / Devnet
 - 递归解析直接及传递 Package 依赖

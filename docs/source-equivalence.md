@@ -29,7 +29,9 @@
 `stop_orders::place_stop_order_sltp`、`stop_orders::place_stop_order_standalone`、
 `metadata::set_extra_field`、`enum_option::destroy_with_default`。
 涉及操作配对、引用别名和枚举解包差异。未确认既不是已证明错误，也不是已证明等价。
-两个空模块 `constants`、`order_id` 的 friend 表仍未精确恢复；官方字节码比较不会忽略它们。
+上述为 2026-11-03 的历史结果。2026-11-09 已精确恢复 `constants`、`order_id` 的 friend 表，
+并移除校验器的空模块例外，详见 [friend 修复记录](friend-events-regression.md)。
+旧版函数与完整字节码比较数字不能当作新输出的等价证明。
 
 ## MystenLabs 源码核对
 

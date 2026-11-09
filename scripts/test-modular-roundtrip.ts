@@ -29,7 +29,7 @@ const modules = checked.stdout.split(/\r?\n/).filter(l => l.startsWith('RESULT '
   const bytes = Buffer.from(p.modules.nodes.find((n: {name: string}) => n.name === m.name).bytes, 'base64');
   assert.equal(m.verification.bytecodeSha256, createHash('sha256').update(bytes).digest('hex'));
   sources[key] = m.source;
-  metadata[key] = { engine: 'rust-move-decompiler', fallback: false, verification: m.verification, bytecodeBase64: m.bytecodeBase64 };
+  metadata[key] = { engine: 'rust-move-decompiler', fallback: false, verification: m.verification, bytecodeBase64: m.bytecodeBase64, legacySource:m.legacySource };
   return { name: m.name, source: '', disassembly: null, functionCount: m.verification.functionCount,
     structCount: 0, bytecodeSha256: m.verification.bytecodeSha256 };
 });

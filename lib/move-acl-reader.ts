@@ -41,11 +41,8 @@ export const moveAclReader = String.raw`export function readMoveAcl(bytes) {
 
 export function compareFriendAcl(actual, expectedFriends, original) {
   if(JSON.stringify(actual.friends)===JSON.stringify(expectedFriends)) return {identical:true};
-  // Only omission of the entire friend table of a proven EMPTY module is
-  // non-executable metadata. Never apply this rule to modules with functions,
-  // types, constants, added friends, or an unverified original bytecode file.
-  if(original?.emptyModule && actual.emptyModule && expectedFriends.length>0 &&
-     actual.friends.length===0) return {identical:false,emptyModuleMetadataOnly:true};
+  // No permission normalization: unused and empty-module friend declarations
+  // must be retained too. Source edition selection restores them before build.
   throw new Error('Friend ACL mismatch: '+actual.moduleId+' expected '+JSON.stringify(expectedFriends)+' actual '+JSON.stringify(actual.friends));
 }
 `;

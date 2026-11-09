@@ -310,6 +310,7 @@ export default function Home() {
             fallback: false,
             verification: payload.verification,
             bytecodeBase64: payload.bytecodeBase64,
+            legacySource: payload.legacySource,
           },
         }));
         return;
@@ -462,6 +463,7 @@ export default function Home() {
               fallback: false,
               verification: payload.verification,
               bytecodeBase64: payload.bytecodeBase64,
+              legacySource: payload.legacySource,
             };
           }
         } catch (cause) {

@@ -19,6 +19,7 @@ use indexmap::IndexMap;
 // -------------------------------------------------------------------------------------------------
 
 struct Context {
+    legacy: bool,
     constant_table: IndexMap<*const Constant<Symbol>, String>,
     mutable_locals: std::collections::BTreeSet<String>,
     variant_fields: std::collections::BTreeSet<(String, Symbol)>,
@@ -33,7 +34,7 @@ fn identifier_doc(name: &str) -> Doc {
 
 impl Context {
     fn binding(&self, name: &str) -> Doc {
-        if self.mutable_locals.contains(name) {
+        if !self.legacy && self.mutable_locals.contains(name) {
             D::text(format!("mut {name}"))
         } else { D::text(name) }
     }
@@ -55,6 +56,46 @@ pub fn module<S: SourceKind>(
     pkg_name: &str,
     model_mod: model::Module<'_, S>,
     module: &ast::Module,
+) -> anyhow::Result<Doc> {
+    module_with_edition(model, pkg_name, model_mod, module, false)
+}
+
+pub fn legacy_module<S: SourceKind>(
+    model: &model::Model<S>, pkg_name: &str, model_mod: model::Module<'_, S>, module: &ast::Module,
+) -> anyhow::Result<Option<Doc>> {
+    let mut module = module.clone();
+    for f in module.functions.values_mut() {
+        let Some(code) = crate::legacy_control_flow::lower(&f.code) else { return Ok(None); };
+        f.code = code;
+    }
+    if !module.enums.is_empty() || !module.functions.values().all(|f| legacy_expression(&f.code)) {
+        return Ok(None);
+    }
+    module_with_edition(model, pkg_name, model_mod, &module, true).map(Some)
+}
+
+fn legacy_expression(e: &Exp) -> bool {
+    match e {
+        Exp::Switch(..) | Exp::Match(..) | Exp::MatchLit(..) | Exp::UnpackVariant(..)
+        | Exp::Unstructured(..) | Exp::Break(Some(_)) | Exp::Continue(Some(_))
+        | Exp::Loop(Some(_), _) | Exp::While(Some(_), _, _) => false,
+        Exp::Data { op: DataOp::PackVariant(_), .. } => false,
+        Exp::Loop(None, e) | Exp::Block(_, e) | Exp::Assign(_, e) | Exp::LetBind(_, e)
+        | Exp::Abort(e) | Exp::Borrow(_, e) | Exp::Unpack(_, _, e) => legacy_expression(e),
+        Exp::VecUnpack(names, e) => names.is_empty() && legacy_expression(e),
+        Exp::Seq(es) | Exp::Return(es) | Exp::Call(_, es) | Exp::Primitive { args: es, .. }
+        | Exp::Data { args: es, .. } => es.iter().all(legacy_expression),
+        Exp::While(None, c, b) => legacy_expression(c) && legacy_expression(b),
+        Exp::IfElse(c, a, b) => legacy_expression(c) && legacy_expression(a)
+            && b.as_ref().as_ref().is_none_or(legacy_expression),
+        Exp::Break(None) | Exp::Continue(None) | Exp::Declare(_) | Exp::Value(_)
+        | Exp::Variable(_) | Exp::Constant(_) => true,
+    }
+}
+
+fn module_with_edition<S: SourceKind>(
+    model: &model::Model<S>, pkg_name: &str, model_mod: model::Module<'_, S>,
+    module: &ast::Module, legacy: bool,
 ) -> anyhow::Result<Doc> {
     // We have no good way to identify constants: in the model, they return the information held in
     // their definition RC, plus their module and actual bytes. We need a way to compare these to
@@ -78,6 +119,7 @@ pub fn module<S: SourceKind>(
             .collect();
 
         Context {
+            legacy,
             constant_table,
             mutable_locals: Default::default(),
             variant_fields: module.enums.values().flat_map(|e| e.variants.iter()
@@ -110,7 +152,7 @@ pub fn module<S: SourceKind>(
         .concat_space(D::text(pkg_name))
         .concat(D::text("::"))
         .concat(identifier_doc(name.as_str()))
-        .concat(D::text(";"))
+        .concat(D::text(if legacy { " {" } else { ";" }))
         .concat(D::line())
         .concat(D::line());
 
@@ -156,7 +198,7 @@ pub fn module<S: SourceKind>(
             let mut doc = D::nil();
             for s in structs.values() {
                 doc = doc
-                    .concat(struct_doc(s))
+                    .concat(struct_doc(s, legacy))
                     .concat(D::line())
                     .concat(D::line());
             }
@@ -234,6 +276,7 @@ pub fn module<S: SourceKind>(
         doc = doc.concat(functions_doc);
     }
 
+    if legacy { doc = doc.concat(D::text("}")).concat(D::line()); }
     Ok(doc)
 }
 
@@ -290,6 +333,7 @@ fn function(context: &Context, fun: &Function) -> Doc {
     let mut mutable_locals = Default::default();
     collect_mutable_locals(&fun.code, &mut mutable_locals);
     let function_context = Context {
+        legacy: context.legacy,
         constant_table: context.constant_table.clone(),
         mutable_locals,
         variant_fields: context.variant_fields.clone(),
@@ -541,7 +585,7 @@ fn ability_list_doc(s: AbilitySet) -> Option<Doc> {
     }
 }
 
-fn struct_doc(s: &Struct) -> Doc {
+fn struct_doc(s: &Struct, legacy: bool) -> Doc {
     let Struct {
         name,
         abilities,
@@ -567,7 +611,7 @@ fn struct_doc(s: &Struct) -> Doc {
         .map(|c| D::softline().concat(D::text("has").concat_space(c)).group())
         .unwrap_or(D::nil());
 
-    D::text("public struct")
+    D::text(if legacy { "struct" } else { "public struct" })
         .concat_space(identifier_doc(name.as_str()))
         .concat(tparams)
         .group()
@@ -1072,6 +1116,10 @@ fn fields(context: &Context, fields: &[(Symbol, String)]) -> Doc {
         .group()
 }
 
+fn legacy_vector_call(context: &Context, name: &str, args: &[Exp]) -> Doc {
+    D::text(format!("0x1::vector::{name}")).concat(exp_list(context, args).parens())
+}
+
 fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
     fn maybe_parens(context: &Context, e: &Exp) -> Doc {
         match e {
@@ -1098,13 +1146,13 @@ fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
             Exp::Data {
                 op: DataOp::ImmBorrowField(field_ref),
                 args: inner,
-            } => maybe_parens(context, &inner[0])
+            } if !context.legacy => maybe_parens(context, &inner[0])
                 .concat(D::text("."))
                 .concat(identifier_doc(field_ref.field.name.as_str())),
             Exp::Data {
                 op: DataOp::VecImmBorrow(_),
                 args: inner,
-            } => maybe_parens(context, &inner[0])
+            } if !context.legacy => maybe_parens(context, &inner[0])
                 .concat(D::text("["))
                 .concat(exp(context, &inner[1]))
                 .concat(D::text("]")),
@@ -1131,6 +1179,12 @@ fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
             .concat(exp_list(context, args))
             .concat(D::text("]")),
 
+        DataOp::VecLen(_) if context.legacy => legacy_vector_call(context, "length", args),
+        DataOp::VecImmBorrow(_) if context.legacy => legacy_vector_call(context, "borrow", args),
+        DataOp::VecMutBorrow(_) if context.legacy => legacy_vector_call(context, "borrow_mut", args),
+        DataOp::VecPushBack(_) if context.legacy => legacy_vector_call(context, "push_back", args),
+        DataOp::VecPopBack(_) if context.legacy => legacy_vector_call(context, "pop_back", args),
+        DataOp::VecSwap(_) if context.legacy => legacy_vector_call(context, "swap", args),
         DataOp::VecLen(_) => method_receiver(context, &args[0]).concat(D::text(".length()")),
 
         DataOp::VecImmBorrow(_) => D::text("&")
@@ -1327,9 +1381,10 @@ fn primitive_op_doc(context: &Context, op: &PrimitiveOp, args: &[Exp]) -> Doc {
             Exp::Variable(_) | Exp::Value(_) | Exp::Constant(_) => exp(context, &args[0]),
             _ => exp(context, &args[0]).parens(),
         };
-        operand
+        let doc = operand
             .concat_space(D::text("as"))
-            .concat_space(D::text(ty.to_owned()))
+            .concat_space(D::text(ty.to_owned()));
+        if context.legacy { doc.parens() } else { doc }
     };
 
     match op {
@@ -1377,12 +1432,29 @@ mod primitive_op_tests {
     }
 
     fn render(e: &Exp) -> String {
+        render_edition(e, false)
+    }
+
+    fn render_edition(e: &Exp, legacy: bool) -> String {
         let context = Context {
+            legacy,
             constant_table: IndexMap::new(),
             mutable_locals: Default::default(),
             variant_fields: Default::default(),
         };
         exp(&context, e).render(100)
+    }
+
+    #[test]
+    fn legacy_rendering_keeps_explicit_borrow_cast_and_mutability() {
+        let e = Exp::Data { op: DataOp::VecMutBorrow(std::rc::Rc::new(move_binary_format::normalized::Type::U64)),
+            args: vec![var("values"), var("index")] };
+        assert_eq!(render_edition(&e,true), "0x1::vector::borrow_mut(values, index)");
+        let read=Exp::Data { op:DataOp::ReadRef,args:vec![e] };
+        assert_eq!(render_edition(&read,true), "*(0x1::vector::borrow_mut(values, index))");
+        assert_eq!(render_edition(&primitive(PrimitiveOp::CastU64,vec![var("value")]),true),"(value as u64)");
+        assert!(!legacy_expression(&Exp::Break(Some(1))));
+        assert!(legacy_expression(&read));
     }
 
     #[test]

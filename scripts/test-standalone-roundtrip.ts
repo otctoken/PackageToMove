@@ -41,7 +41,7 @@ const modules=run(binary('verify_package'),[],input).split(/\r?\n/).filter(l=>l.
   assert.equal(hash,m.verification.bytecodeSha256);
   assert.equal(m.bytecodeBase64,original.bytes);
   sources[key]=m.source;
-  metadata[key]={engine:'rust-move-decompiler',fallback:false,verification:m.verification,bytecodeBase64:m.bytecodeBase64};
+  metadata[key]={engine:'rust-move-decompiler',fallback:false,verification:m.verification,bytecodeBase64:m.bytecodeBase64,legacySource:m.legacySource};
   return {name:m.name,source:'',disassembly:null,functionCount:m.verification.functionCount,structCount:0,bytecodeSha256:hash};
 });
 assert.equal(modules.length,p.modules.nodes.length);
@@ -60,6 +60,7 @@ for(const mode of ['audit','new-package'] as const) {
   const validation=JSON.parse(readFileSync(join(project,'validation.json'),'utf8'));
   assert.equal(validation.validationPassed,true);
   assert.equal(validation.friendAclPassed,true);
+  assert.equal(validation.friendTablesIdentical,true);
   assert.equal(validation.businessTestsVerified,false);
   assert.equal(validation.publishInputGenerated,mode==='new-package');
 }

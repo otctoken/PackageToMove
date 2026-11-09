@@ -26,6 +26,37 @@ for (const p of selected) {
   }};
 }
 const files=moveProjectFiles("mainnet", selected, sources, metadata);
+// Select edition for the whole package; preserve permissions under relocation,
+// and reject a second rendering whose friend table differs from the audit view.
+{
+  const fp={...root,dependencies:[],modules:[root.modules[0],{...root.modules[0],name:'ally'}]};
+  const a=`${root.id}::same_name`,b=`${root.id}::ally`;
+  const fs={ [a]:`module ${a}; friend ${b}; public(friend) fun restricted(): u64 { 1 }`,
+    [b]:`module ${b}; public fun run(): u64 { ${a}::restricted() }` };
+  const fm={ [a]:{...metadata[a],legacySource:`module ${a} { friend ${b}; public(friend) fun restricted(): u64 { 1 } }`},
+    [b]:{...metadata[a],legacySource:`module ${b} { public fun run(): u64 { ${a}::restricted() } }`} };
+  const legacy=moveProjectFiles('mainnet',[fp],fs,fm);
+  assert.match(legacy['Move.toml'],/edition = "legacy"/);
+  assert.match(legacy['sources/same_name.move'],/public\(friend\)/);
+  assert.doesNotMatch(legacy['sources/same_name.move'],/public\(package\)/);
+  assert.equal(legacy['audit/sources/same_name.move'],fs[a]);
+  const relocated=moveProjectFiles('mainnet',[fp],fs,fm,'new-package');
+  assert(relocated['sources/same_name.move'].includes(`friend Package_${root.id.slice(2)}::ally;`));
+  assert.deepEqual(JSON.parse(relocated['manifest.json']).packages[0].modules[0].expectedCompiledFriends,[id(0)+'::ally']);
+  assert.throws(()=>moveProjectFiles('mainnet',[fp],fs,{...fm,[a]:{...fm[a],legacySource:`module ${a} {}`}}),/changed original friend identity/);
+  const modern=moveProjectFiles('mainnet',[fp],fs,{...fm,[b]:{...fm[b],legacySource:null}});
+  assert.match(modern['Move.toml'],/edition = "2024"/);
+  assert.deepEqual(JSON.parse(modern['manifest.json']).packages[0].modules[0].expectedCompiledFriends,[b]);
+  const known={
+    [a]:{...fm[a],verification:{...fm[a].verification,friendFunctions:[a+'::restricted'],calledFunctions:[]}},
+    [b]:{...fm[b],verification:{...fm[b].verification,friendFunctions:[],calledFunctions:[a+'::restricted']}},
+  };
+  const inferred=moveProjectFiles('mainnet',[fp],fs,known);
+  assert.match(inferred['Move.toml'],/edition = "2024"/);
+  assert.deepEqual(JSON.parse(inferred['manifest.json']).packages[0].modules[0].expectedCompiledFriends,[b]);
+  known[b].verification.calledFunctions=[];
+  assert.match(moveProjectFiles('mainnet',[fp],fs,known)['Move.toml'],/edition = "legacy"/);
+}
 assert.equal(files["sources/same_name.move"], sources[`${root.id}::same_name`]);
 assert.ok(files[`dependencies/${dep.id}/sources/same_name.move`]);
 assert.match(files["Move.toml"], new RegExp(`local = "dependencies/${dep.id}"`));

@@ -48,7 +48,7 @@ Sui CLI: `1.82.3-bf4073918ed3`.
   The strict instruction-comparison command still exits nonzero. Neither compilation
   nor a model match is a complete semantic-equivalence proof.
 
-**Exact friend metadata is not recovered.** The current 2024 friend adapter does not
+**Historical result, superseded on 2026-11-09:** the earlier 2024 friend adapter did not
 retain the unused original friend tables of two modules in package
 `0x3ec740df8428aa9c93aaef7f8cc1542ac3194fd014826b51bfe245346d64efc7`:
 
@@ -57,14 +57,13 @@ retain the unused original friend tables of two modules in package
 | constants | 8 | 0 |
 | order_id | 1 | 0 |
 
-The audit sources and manifest retain the original tables. Downloads now also include
-original `.mv.base64` bytecode files. The verifier checks their SHA-256, module identity
-and friend table against the manifest. A narrowly scoped normalization accepts omission
-of the entire friend table only when **both bytecodes have no functions, types or constants**.
-It reports `friendTablesIdentical: false` and lists both differences. Added friends, changed
-nonempty modules, absent original evidence, and missing compiled modules still fail.
-`node verify.mjs --require-exact-metadata` rejects even these empty-module differences.
-This normalization does not assert upgrade compatibility or exact bytecode recovery.
+The 2026-11-09 [friend restoration](friend-events-regression.md) retains these tables
+with explicit declarations and a legacy edition renderer. Both exports now compile and
+all 37 friend tables match exactly, including `constants` (8) and `order_id` (1).
+The empty-module exception has been removed. Default `node verify.mjs` rejects every
+missing or added friend; `--require-exact-metadata` is retained as a compatible alias.
+The numerical instruction and official-source comparisons above describe the earlier
+2024 output, not a new equivalence certificate for the legacy-rendered output.
 
 ## Reproduction
 
@@ -77,7 +76,7 @@ npm run test:authority-roundtrip
 `test:authority-build` verifies all module coverage, both export builds/tests, friend access
 checks and offline new-package publication input. It does not compare function instructions.
 `test:authority-roundtrip` additionally runs the strict instruction comparator and currently
-fails on the 6 unverified functions; this failure must not be described as a passing check.
+retains any unverified functions as failures; this must not be described as a passing check.
 
 The subsequent [official-source investigation](source-equivalence.md) additionally compares
 whole `CompiledModule` values without metadata normalization: 5 modules match, 32 differ.

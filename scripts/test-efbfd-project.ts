@@ -23,7 +23,7 @@ for(const role of ['root','dependency']) {
     const bytes=Buffer.from(p.modules.nodes.find((node:{name:string})=>node.name===m.name).bytes,'base64');
     assert.equal(m.verification.bytecodeSha256,createHash('sha256').update(bytes).digest('hex'));
     sources[key]=m.source;
-    metadata[key]={engine:'rust-move-decompiler',fallback:false,verification:m.verification,bytecodeBase64:m.bytecodeBase64};
+    metadata[key]={engine:'rust-move-decompiler',fallback:false,verification:m.verification,bytecodeBase64:m.bytecodeBase64,legacySource:m.legacySource};
     modules.push({name:m.name,source:'',disassembly:null,functionCount:m.verification.functionCount,
       structCount:0,bytecodeSha256:m.verification.bytecodeSha256});
     if(m.name==='fee_collector') assert.match(m.source,/let _ = x2_balance::join/);

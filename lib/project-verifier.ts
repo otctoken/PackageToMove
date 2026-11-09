@@ -24,8 +24,8 @@ function digest() {
 }
 const report = {startedAt:new Date().toISOString(), inputSha256:null, buildPassed:false,
   validationPassed:false, friendAclPassed:false,
-  friendTablesIdentical:true, emptyModuleMetadataDifferences:[],
-  metadataPolicy:process.argv.includes('--require-exact-metadata')?'exact':'empty-module-omission-v1',
+  friendTablesIdentical:null, friendAclDifferences:[],
+  metadataPolicy:'exact',
   testCommandPassed:false, testCount:null, businessTestsVerified:false,
   publishInputGenerated:false,
   semanticEquivalenceVerified:false, publishVerified:false, steps:[]};
@@ -75,14 +75,15 @@ try {
           const expectedOriginal=mod.expectedCompiledFriends.map(id=>mod.relocated&&id.startsWith('0x'+'0'.repeat(64)+'::') ? pkg.originalId+id.slice(66) : id).sort();
           if(JSON.stringify(original.friends)!==JSON.stringify(expectedOriginal)) throw new Error('Original friend table differs from manifest');
         }
-        const acl=compareFriendAcl(actual,mod.expectedCompiledFriends,original);
-        if(!acl.identical) {
+        if(JSON.stringify(actual.friends)!==JSON.stringify(mod.expectedCompiledFriends)) {
           report.friendTablesIdentical=false;
-          report.emptyModuleMetadataDifferences.push({module:mod.compiledModuleId,originalFriends:mod.expectedCompiledFriends,compiledFriends:actual.friends,
-            reason:'Only friend metadata removed from a bytecode-verified empty module; no functions, types or constants. Upgrade compatibility not verified.'});
-          if(report.metadataPolicy==='exact') throw new Error('Exact friend metadata required: '+mod.compiledModuleId);
+          report.friendAclDifferences.push({module:mod.compiledModuleId,originalFriends:mod.expectedCompiledFriends,compiledFriends:actual.friends,
+            missingFriends:mod.expectedCompiledFriends.filter(id=>!actual.friends.includes(id)),
+            addedFriends:actual.friends.filter(id=>!mod.expectedCompiledFriends.includes(id))});
         }
+        compareFriendAcl(actual,mod.expectedCompiledFriends,original);
       }
+      report.friendTablesIdentical=true;
       report.friendAclPassed=true;
     }
     else {
@@ -115,10 +116,10 @@ try {
   if (digest() !== report.inputSha256) throw new Error('Sources changed during validation');
   report.validationPassed = true;
   console.log('Build and test commands passed. This is NOT semantic-equivalence or publication verification.');
-  if(!report.friendTablesIdentical) console.log('Empty-module friend metadata differs; see emptyModuleMetadataDifferences. Exact metadata and upgrade compatibility are NOT verified.');
   if (!report.testCount) console.log('No business test cases were verified. Add tests before publication.');
 } catch (error) {
   report.error = String(error);
+  console.error(report.error);
   process.exitCode = 1;
 } finally { report.finishedAt = new Date().toISOString(); save(); }
 `;

@@ -31,6 +31,8 @@ pub struct BytecodeVerification {
     pub known_instruction_coverage: bool,
     pub control_flow_fully_structured: bool,
     pub audit_warnings: Vec<String>,
+    pub friend_functions: Vec<String>,
+    pub called_functions: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -457,6 +459,21 @@ fn inspect_bytecode(
     let known_instruction_coverage =
         unsupported_instruction_count == 0 && audit_warnings.is_empty();
 
+    let function_id = |index| {
+        let f = module.function_handle_at(index);
+        let m = module.module_handle_at(f.module);
+        format!("0x{}::{}::{}", module.address_identifier_at(m.address),
+            module.identifier_at(m.name), module.identifier_at(f.name))
+    };
+    let friend_functions = module.function_defs().iter()
+        .filter(|f| f.visibility == move_binary_format::file_format::Visibility::Friend)
+        .map(|f| function_id(f.function)).collect();
+    let called_functions: std::collections::BTreeSet<_> = module.function_defs().iter()
+        .filter_map(|f| f.code.as_ref()).flat_map(|c| c.code.iter()).filter_map(|op| match op {
+            Bytecode::Call(index) => Some(function_id(*index)),
+            Bytecode::CallGeneric(index) => Some(function_id(module.function_instantiation_at(*index).handle)),
+            _ => None,
+        }).collect();
     BytecodeVerification {
         canonical_input: "sui-chain-bytecode",
         audit_policy: "fail-closed-v1",
@@ -475,6 +492,8 @@ fn inspect_bytecode(
         known_instruction_coverage,
         control_flow_fully_structured,
         audit_warnings,
+        friend_functions,
+        called_functions: called_functions.into_iter().collect(),
     }
 }
 
@@ -502,6 +521,12 @@ fn enforce_audit_policy(
 pub fn decompile_verified_bytecode(
     bytecode: &[u8],
 ) -> Result<(String, BytecodeVerification), String> {
+    decompile_verified_bytecode_views(bytecode).map(|(source, verification, _)| (source, verification))
+}
+
+pub fn decompile_verified_bytecode_views(
+    bytecode: &[u8],
+) -> Result<(String, BytecodeVerification, Option<String>), String> {
     // Large verified functions exceed the default Windows/Tokio worker stack.
     // Keep stack policy identical for CLI, tests and the production API.
     std::thread::scope(|scope| {
@@ -515,7 +540,7 @@ pub fn decompile_verified_bytecode(
     })
 }
 
-fn decompile_on_worker(bytecode: &[u8]) -> Result<(String, BytecodeVerification), String> {
+fn decompile_on_worker(bytecode: &[u8]) -> Result<(String, BytecodeVerification, Option<String>), String> {
     let module = CompiledModule::deserialize_with_defaults(bytecode)
         .map_err(|error| format!("Move bytecode parse failed: {error}"))?;
     move_bytecode_verifier::verify_module_unmetered(&module)
@@ -535,7 +560,12 @@ fn decompile_on_worker(bytecode: &[u8]) -> Result<(String, BytecodeVerification)
     let source = fs::read_to_string(source_path)
         .map_err(|error| format!("Could not read generated Move source view: {error}"))?;
     let verification = inspect_bytecode(&module, bytecode, &source);
-    enforce_audit_policy(source, verification)
+    let (source, verification) = enforce_audit_policy(source, verification)?;
+    let legacy_path = source_path.with_extension("legacy.move");
+    let legacy_source = if legacy_path.exists() {
+        Some(fs::read_to_string(legacy_path).map_err(|error| format!("Could not read legacy view: {error}"))?)
+    } else { None };
+    Ok((source, verification, legacy_source))
 }
 
 #[cfg(test)]

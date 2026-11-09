@@ -16,9 +16,10 @@ fn main() {
             module.identifier_at(module.function_handle_at(f.function).name).to_string()
         }).collect();
         eprintln!("{}: {} functions: {}", node["name"], names.len(), names.join(", "));
-        match sui_scope_rust::decompile_verified_bytecode(&bytes) {
-            Ok((source, verification)) => println!("RESULT {}", serde_json::json!({
+        match sui_scope_rust::decompile_verified_bytecode_views(&bytes) {
+            Ok((source, verification, legacy_source)) => println!("RESULT {}", serde_json::json!({
                 "name":node["name"], "source":source, "verification":verification,
+                "legacySource": legacy_source,
                 "bytecodeBase64": node["bytes"]
             })),
             Err(error) => { eprintln!("{error}"); std::process::exit(1); }

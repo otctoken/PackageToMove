@@ -63,6 +63,27 @@ export function moveProjectFiles(
     if (skipSystemDecompilation(pkg.id)) throw new Error("系统地址不应加入反编译任务");
     if (!/^0x[0-9a-f]{64}$/.test(pkg.id)) throw new Error("Invalid package path");
     const prefix = pkg.id === root.id ? "" : `dependencies/${pkg.id}/`;
+    // Prefer 2024 when the original call graph can regenerate the *entire*
+    // friend table. Otherwise retain explicit declarations in legacy syntax.
+    // This is only edition selection; the compiled binary ACL remains mandatory.
+    const moduleInputs = pkg.modules.map(m => {
+      const key = `${pkg.id}::${m.name}`;
+      return { syntax: sources[key] ? adaptFriendSyntax(sources[key]) : undefined,
+        verification: metadata[key]?.verification };
+    });
+    const callsKnown = moduleInputs.every(m => m.syntax &&
+      Array.isArray(m.verification?.friendFunctions) && Array.isArray(m.verification?.calledFunctions));
+    const needsExplicitFriends = moduleInputs.some(m => {
+      if (!m.syntax?.changed) return false;
+      if (!callsKnown) return true;
+      const functions = new Set(m.verification!.friendFunctions!);
+      const callers = moduleInputs.filter(c => c.syntax!.moduleId !== m.syntax!.moduleId &&
+        c.verification!.calledFunctions!.some(f => functions.has(f))).map(c => c.syntax!.moduleId).sort();
+      return JSON.stringify(callers) !== JSON.stringify(m.syntax.expectedFriends);
+    });
+    const preserveFriends = needsExplicitFriends
+      && pkg.modules.every(m => Boolean(metadata[`${pkg.id}::${m.name}`]?.legacySource));
+    const edition = preserveFriends ? 'legacy' : '2024';
     const deps = pkg.dependencies.flatMap((id) => {
       if (skipSystemDecompilation(id)) {
         const declaration = systemDependency(id);
@@ -77,7 +98,7 @@ export function moveProjectFiles(
     });
     files[`${prefix}Move.toml`] = [
       "# Reconstructed project. See manifest.json for provenance and verification limits.",
-      "[package]", `name = "${packageName(pkg.id)}"`, 'edition = "2024"',
+      "[package]", `name = "${packageName(pkg.id)}"`, `edition = "${edition}"`,
       ...(newPackage && pkg.id === root.id ? [] : [`published-at = "${pkg.id}"`]),
       "", "[dependencies]", ...deps, "",
     ].join("\n");
@@ -100,9 +121,16 @@ export function moveProjectFiles(
       const relocated = newPackage && pkg.id === root.id;
       const compatibility = adaptFriendSyntax(source);
       moduleAddresses.add(compatibility.moduleId.split("::")[0]);
-      const buildSource = compatibility.source;
+      const buildSource = preserveFriends ? metadata[key].legacySource! : compatibility.source;
+      if (preserveFriends) {
+        const retained = adaptFriendSyntax(buildSource, true);
+        if (retained.moduleId !== compatibility.moduleId || JSON.stringify(retained.expectedFriends) !== JSON.stringify(compatibility.expectedFriends)) {
+          throw new Error(`Legacy source changed original friend identity: ${key}`);
+        }
+      }
       files[file] = relocated ? relocateMove(buildSource, rootIdentities, packageName(root.id)) : buildSource;
-      if (compatibility.changed) files[file] = '// BUILD ADAPTER: audit source and exact friend ACL are retained in audit/ and manifest.json.\n' + files[file];
+      if (preserveFriends) files[file] = '// Legacy edition rendering preserves the original explicit friend ACL.\n' + files[file];
+      else if (compatibility.changed) files[file] = '// BUILD ADAPTER: audit source and exact friend ACL are retained in audit/ and manifest.json.\n' + files[file];
       const auditSourceFile = `${prefix}audit/sources/${mod.name}.move`;
       files[auditSourceFile] = source;
       const bytecodeBase64 = metadata[key]?.bytecodeBase64;
@@ -112,7 +140,8 @@ export function moveProjectFiles(
         `0x${'0'.repeat(64)}::${id.split('::')[1]}` : id;
       if (mod.disassembly) files[`${prefix}bytecode/${mod.name}.mv.disasm`] = mod.disassembly;
       return { name: mod.name, file, auditSourceFile, originalBytecodeFile, relocated,
-        friendSyntaxAdapted:compatibility.changed, compiledModuleId:buildIdentity(compatibility.moduleId),
+        friendSyntaxAdapted:!preserveFriends && compatibility.changed, sourceEdition:edition,
+        explicitFriendPermissionsPreserved:preserveFriends, compiledModuleId:buildIdentity(compatibility.moduleId),
         expectedCompiledFriends:compatibility.expectedFriends.map(buildIdentity).sort(),
         verificationAppliesTo: "auditSourceFile", verification };
     });
@@ -172,16 +201,16 @@ Root modules are in sources/. Dependencies are separate local packages in
 dependencies/<package-id>/sources/, each with its own Move.toml. Merging them into
 the root sources/ would change package ownership and publication semantics.
 
-FRIEND COMPATIBILITY: where bytecode contains friend access, sources/ contains an
-explicitly marked 2024 BUILD ADAPTER using public(package). The unmodified audit
-view stays in audit/sources/ (and dependencies/<id>/audit/sources/). Consult each
-module's auditSourceFile in manifest.json. Do NOT assume these permissions are
-equivalent: verify.mjs compares EVERY recompiled module's friend list against the
-original list. Additions, missing modules, and changes in nonempty modules fail.
-The sole normalization is removal of friend metadata from a module proven EMPTY
-by both original (SHA-256-checked) and rebuilt bytecode: no functions, types, or
-constants. Such differences are reported explicitly with friendTablesIdentical=false.
-Use node verify.mjs --require-exact-metadata to reject these differences too.
+FRIEND COMPATIBILITY: packages with friend declarations use legacy edition when
+all their modules can be rendered in that syntax from the same decompiled AST.
+This retains explicit friend declarations and public(friend), including unused
+permissions. Modern-only packages retain the marked 2024 BUILD ADAPTER and still
+must pass the exact compiled permission check. No missing/added friend is accepted,
+including empty modules. Unsupported cases remain failures rather than being certified.
+The original view stays in audit/sources/ and dependencies/<id>/audit/sources/.
+verify.mjs compares EVERY recompiled module's friend list with the original list.
+It records missingFriends and addedFriends in validation.json and exits nonzero
+on any difference. --require-exact-metadata remains accepted; exact is now default.
 This does not establish semantic equivalence or upgrade compatibility.
 Addresses 0x1 through 0x8 are excluded from decompilation. std/sui are implicit
 official toolchain dependencies; 0x3 uses system = "sui_system". 0x5..0x8 are
