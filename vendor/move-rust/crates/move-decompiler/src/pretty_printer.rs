@@ -1117,7 +1117,10 @@ fn fields(context: &Context, fields: &[(Symbol, String)]) -> Doc {
 }
 
 fn legacy_vector_call(context: &Context, name: &str, args: &[Exp]) -> Doc {
-    D::text(format!("0x1::vector::{name}")).concat(exp_list(context, args).parens())
+    // Sui's fake_natives::resolve_builtin checks the *named* std address.
+    // A numeric 0x1 path emits Call instead of the original Vec* instruction,
+    // even though its numeric module identity is the same. Preserve the opcode.
+    D::text(format!("std::vector::{name}")).concat(exp_list(context, args).parens())
 }
 
 fn data_op_doc(context: &Context, op: &DataOp, args: &[Exp]) -> Doc {
@@ -1449,9 +1452,9 @@ mod primitive_op_tests {
     fn legacy_rendering_keeps_explicit_borrow_cast_and_mutability() {
         let e = Exp::Data { op: DataOp::VecMutBorrow(std::rc::Rc::new(move_binary_format::normalized::Type::U64)),
             args: vec![var("values"), var("index")] };
-        assert_eq!(render_edition(&e,true), "0x1::vector::borrow_mut(values, index)");
+        assert_eq!(render_edition(&e,true), "std::vector::borrow_mut(values, index)");
         let read=Exp::Data { op:DataOp::ReadRef,args:vec![e] };
-        assert_eq!(render_edition(&read,true), "*(0x1::vector::borrow_mut(values, index))");
+        assert_eq!(render_edition(&read,true), "*(std::vector::borrow_mut(values, index))");
         assert_eq!(render_edition(&primitive(PrimitiveOp::CastU64,vec![var("value")]),true),"(value as u64)");
         assert!(!legacy_expression(&Exp::Break(Some(1))));
         assert!(legacy_expression(&read));

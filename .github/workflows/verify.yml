@@ -93,10 +93,14 @@ jobs:
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
         run: npm run test:optimizer-roundtrip -- .research/ci-optimizer
-      - name: Preserve all explicit friend permissions in the uploaded events project
+      - name: Compare all 628 events project functions and preserve all friend permissions
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
-        run: npm run test:friend-events-build -- .research/ci-friend-events
+        run: npm run test:friend-events-roundtrip -- .research/ci-friend-events
+      - name: Preserve vector opcodes and reject altered operands and numeric native calls
+        env:
+          MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
+        run: npx tsx scripts/test-vector-intrinsics.ts .research/ci-vector-intrinsics
       - name: Reject a removed unused friend even when compilation succeeds
         run: npx tsx scripts/test-friend-acl-tamper.ts .research/ci-friend-events/audit
       - name: Compare the complete 38-module efbfd project

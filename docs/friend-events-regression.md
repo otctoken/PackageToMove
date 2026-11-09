@@ -52,11 +52,14 @@ Using official `sui 1.82.3-bf4073918ed3`:
 - Existing optimizer (1,067 functions), efbfd (295), and math (168) instruction-model
   regressions remain mandatory. No comparator rule is relaxed for this change.
 
-The events instruction comparison remains incomplete: the initial legacy output
+The initial events instruction comparison was incomplete: that legacy output
 had 419 normalized-identical functions, 181 additional model matches and 28
 unverified functions. Legacy vector calls versus vector bytecode operations are
 among the differences the model does not confirm. The strict comparison exits
-nonzero and is not reported as a successful equivalence check.
+nonzero and was not reported as a successful equivalence check.
+The subsequent [vector instruction review](vector-instruction-review.md) corrects
+the renderer and retains literal boolean branches. All 628 functions now pass
+the unchanged model (426 normalized-identical, 202 additional matches, 0 unverified).
 Compilation and exact friend ACLs do not prove complete business-logic equivalence,
 historical dependency equivalence, gas equivalence or deployability as the original identity.
 Generated projects contain zero recovered business tests. No transaction is sent.
@@ -66,6 +69,6 @@ cargo build --bin verify_package --bin compare_project
 npm run test:friend-events-build -- .research/friend-events
 npx tsx scripts/test-friend-acl-tamper.ts .research/friend-events/audit
 npm run test:authority-build
-# Diagnostic; fails if any function remains unverified:
+# Mandatory CI regression; fails if any function remains unverified:
 npm run test:friend-events-roundtrip
 ```

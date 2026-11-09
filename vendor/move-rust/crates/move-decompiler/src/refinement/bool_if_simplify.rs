@@ -1,21 +1,20 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Collapse `if (t) { ... } else { ... }` whose arms are boolean literals into `&&`/`||`/`!`.
+//! Collapse mixed boolean-literal/expression arms into short-circuited `&&`/`||`.
 //!
 //! For a conditional whose conseq and/or alt is a literal `true`/`false`:
 //!
 //! | conseq | alt  | output    |
 //! |--------|------|-----------|
-//! | `true` | `false` | `t`       |
-//! | `false`| `true`  | `!t`      |
 //! | `true` | `e`     | `t \|\| e`  |
 //! | `false`| `e`     | `!t && e` |
 //! | `e`    | `true`  | `!t \|\| e` |
 //! | `e`    | `false` | `t && e`  |
 //!
-//! Both arms-are-literal forms reduce the if to a plain expression that preserves `t`'s
-//! evaluation (including side effects); the mixed forms map to short-circuited `&&`/`||`,
+//! Both-literal conditionals retain their original branch and selected value.
+//!
+//! The mixed forms map to short-circuited `&&`/`||`,
 //! which evaluate `t` then conditionally evaluate `e` - the same observable behavior as the
 //! original if's arm selection.
 //!
@@ -51,8 +50,9 @@ impl Refine for BoolIfSimplify {
         let alt_bool = bool_literal(alt);
 
         let new_exp = match (conseq_bool, alt_bool) {
-            (Some(true), Some(false)) => take_cond(cond),
-            (Some(false), Some(true)) => negated(take_cond(cond)),
+            // Keep the bytecode's branch/value selection instead of relying on
+            // predicate-equivalence normalization in the audit comparator.
+            (Some(_), Some(_)) => return false,
             (Some(true), None) => or(take_cond(cond), alt.clone()),
             (Some(false), None) => and(negated(take_cond(cond)), alt.clone()),
             (None, Some(true)) => or(negated(take_cond(cond)), (**conseq).clone()),
@@ -97,5 +97,21 @@ fn and(a: Exp, b: Exp) -> Exp {
     Exp::Primitive {
         op: PrimitiveOp::And,
         args: vec![a, b],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literal_arms_keep_the_original_branch_and_values() {
+        for (a,b) in [(true,false),(false,true),(true,true),(false,false)] {
+            let mut code=Exp::IfElse(Box::new(Exp::Variable("condition".into())),
+                Box::new(Exp::Value(Value::Bool(a))),Box::new(Some(Exp::Value(Value::Bool(b)))));
+            let before=format!("{code:?}");
+            assert!(!refine(&mut code));
+            assert_eq!(format!("{code:?}"),before);
+        }
     }
 }
