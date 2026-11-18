@@ -186,7 +186,7 @@ fn main() {
         "instructionModelMatched":functions==identical+matched,
         "semanticEquivalenceProven":false})
     );
-    if functions != identical + matched
+    if functions != identical + matched || !empty_module_metadata_differences.is_empty()
         || (exact_required && !module_bytecode_differences.is_empty())
     {
         std::process::exit(1)

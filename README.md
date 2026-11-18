@@ -37,7 +37,7 @@ Download All 默认选择“新包构建版”，也可选择保留链上地址�
 - 重建函数调用、常量、分支、循环、局部值、字段读写和结构体构造，失败时保留链上反汇编
 - 下载 `.move` 与 `.mv.disasm`
 - Download All 导出 Move.toml、主包 sources/、dependencies/<包地址>/ 下各依赖的 Move.toml 与 sources/，并附字节码哈希和版本清单。依赖不能混入根包 sources/，否则改变包归属。
-- `0x1`～`0x8` 按地址精确跳过反编译，保留依赖元数据；`std`/`sui` 使用 CLI 隐式依赖，`0x3` 使用官方 `system = "sui_system"`。`0x5`～`0x8` 是系统对象，不是包；不为 `0x4` 虚构包配置。
+- `0x1`～`0x8` 按地址跳过反编译。两种导出的根包和依赖都使用 `manifest.json` 中记录的官方 Sui v1.84.0 构建框架提交来解析 `std`、`sui` 和所需的 `sui_system`。清单另存链上 linkage 版本，历史框架实现仍需独立核对。
 - Rust Vercel Function 主反编译器，完整反编译采用 fail-closed 准入
 - 展示字节码 SHA-256、指令、常量、Abort、分支、后向分支、泛型调用和写引用统计
 - 不使用 AI 优化模式，不需要第三方反编译 API 或 API Key

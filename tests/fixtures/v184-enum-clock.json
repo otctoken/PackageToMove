@@ -1,0 +1,37 @@
+{
+  "network": "testnet",
+  "provenance": "Local Move 2024 fixture compiled with sui 1.84.0-9dc25070cf2e: a package-visible call, enum match assigned to a local, vector indexing and clock::borrow.",
+  "data": {
+    "object": {
+      "package": {
+        "address": "0x000000000000000000000000000000000000000000000000000000000000ca84",
+        "version": 1,
+        "digest": "local-compiler-probe",
+        "linkage": [
+          {
+            "originalId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "upgradedId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "version": 1
+          },
+          {
+            "originalId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+            "upgradedId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+            "version": 1
+          }
+        ],
+        "modules": {
+          "nodes": [
+            {
+              "name": "caller",
+              "bytes": "oRzrCwcAAAUHAQAEAgQEAwgKBRIMBx4rCEkgDGkVAAIAAwEABwAABAABAAEBAwEAAQcIAAEDAAIHCAADB0NvdW50ZXIIYWNxdWlyZXMGY2FsbGVyCGZlYXR1cmVzCWluY3JlbWVudAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMqEAAEAAAIECwAGAQAAAAAAAAARAQIAAA=="
+            },
+            {
+              "name": "features",
+              "bytes": "oRzrCwcAAAUMAQAEAgQMAxAeBS4gB05oCLYBQAr2AQUM+wGIAQ2DAwIPhQMCEYcDCROQAwQACgEJAAMHAAABAwABAggAAAUAAQAACwECAAAGAwEAAAwEAQABBwQGAAEOBgEAAgcIAAMBAwEIAAMHCAAIAQcKAwAEAwYIAQgBAwEGCAIGQW1vdW50BkNob2ljZQVDbG9jawdDb3VudGVyBFNraXAIYWNxdWlyZXMFYXBwbHkGYm9ycm93BmNhbGxlcgVjbG9jawhmZWF0dXJlcwRtYWtlA25vdwRwb3MwDHRpbWVzdGFtcF9tcwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMqEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAgEFAwADAAAEDAoAEAAUCwEWCgAPABULABAAFAIAAQEAAAQDCwASAAIAAgEAAAUgCwEMBQ4FDAQKBFYACwRRAAsFUAAGAAAAAAAAAAAMAwUTCwRRAQELBVABDAMLAwwGCgILBkQBCwALAi4GAAAAAAAAAABCARQRAAIBAAIBBg0DAQAABAMRBBEFAgAAAAAIAQICBAAAAQ0DAAAAAQA="
+            }
+          ]
+        }
+      }
+    }
+  }
+}

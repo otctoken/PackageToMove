@@ -915,6 +915,9 @@ fn exp(context: &Context, exp: &Exp) -> Doc {
             Exp::Match(subject, enum_ty, arms) => {
                 let arms_doc = Doc::intersperse(
                     arms.iter().map(|(variant, fields, body)| {
+                        let Some(variant) = variant else {
+                            return D::text("_ =>").concat_space(e_block(context, body));
+                        };
                         let mut pat = D::text(format!("{enum_ty}::{}", source_identifier(variant.as_str())));
                         if !fields.is_empty() {
                             let field_doc = Doc::intersperse(

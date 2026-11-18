@@ -170,14 +170,13 @@ fn is_eligible(x: &str, y: &str, root: &Exp, liveness: &Liveness) -> bool {
     }
 
     // Destination `x`: declared once via this binding, never written, never re-introduced,
-    // never mut-borrowed. The mut-borrow guard on `x` is the symmetric requirement: if
-    // some site takes `&mut x`, our substitution would need the writes-through-the-borrow
-    // to land on `y` too, which the rewrite doesn't replicate.
+    // never borrowed. Even an immutable borrow of a local copy must retain
+    // the identity of that copy when the source slot is also borrowed.
     if counts.assigns(x) != 0
         || counts.letbinds(x) != 1
         || counts.declares(x) != 0
         || counts.unpacks(x) != 0
-        || counts.mut_borrows(x) != 0
+        || counts.borrowed(x)
     {
         return false;
     }

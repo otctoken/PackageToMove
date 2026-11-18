@@ -267,7 +267,7 @@ pub enum Exp {
     Match(
         Box<Exp>,
         /* enum */ TypeRef,
-        /* variant x pattern-fields x rhs */ Vec<(Symbol, Vec<(Symbol, String)>, Exp)>,
+        /* variant (None for wildcard) x pattern-fields x rhs */ Vec<(Option<Symbol>, Vec<(Symbol, String)>, Exp)>,
     ),
     /// Integer-literal `match` on a synthetic dispatch local.
     MatchLit(Box<Exp>, Vec<(DispatchTag, Exp)>),
@@ -805,9 +805,10 @@ impl std::fmt::Display for Exp {
 fn write_match_pattern(
     f: &mut std::fmt::Formatter<'_>,
     enum_ty: &TypeRef,
-    variant: &Symbol,
+    variant: &Option<Symbol>,
     fields: &[(Symbol, String)],
 ) -> std::fmt::Result {
+    let Some(variant) = variant else { return write!(f, "_"); };
     write!(f, "{enum_ty}::{variant}")?;
     if fields.is_empty() {
         return Ok(());

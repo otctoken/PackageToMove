@@ -122,8 +122,15 @@ const withSystems = {...root, dependencies: [...root.dependencies, ...Array.from
 const withoutSystemSources = projectPackages({...result, packages:[withSystems,dep,shared]},root.id);
 assert.equal(withoutSystemSources.length, 3);
 const systemFiles = moveProjectFiles("mainnet",withoutSystemSources,sources,metadata);
-assert.doesNotMatch(systemFiles["Move.toml"], /implicit-dependencies = false/);
-assert.match(systemFiles["Move.toml"], /sui_system = \{ system = "sui_system" \}/);
+const framework = JSON.parse(systemFiles["manifest.json"]).buildFramework;
+assert.match(framework.revision, /^[a-f0-9]{40}$/);
+for (const [file, contents] of Object.entries(systemFiles)) {
+  if (!file.endsWith("Move.toml")) continue;
+  assert.match(contents, /implicit-dependencies = false/);
+  for (const name of ["std", "sui", ...(file === "Move.toml" ? ["sui_system"] : [])]) {
+    assert.ok(contents.split("\n").some(line => line.startsWith(name + " = { git") && line.includes(framework.revision)));
+  }
+}
 assert.ok(!Object.keys(systemFiles).some(path=>path.startsWith(`dependencies/${id(1)}/`)));
 assert.equal(JSON.parse(systemFiles["manifest.json"]).packages[0].skippedSystemDependencies.length,8);
 assert.throws(()=>projectPackages(result,id(1)), /跳过/);

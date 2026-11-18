@@ -43,6 +43,7 @@ pub struct NameCounts {
     /// `assigns`. Callers reasoning about whether a slot's value is invariant want
     /// `assigns(n) == 0 && mut_borrows(n) == 0`.
     mut_borrows: BTreeMap<String, usize>,
+    imm_borrows: BTreeSet<String>,
 }
 
 impl NameCounts {
@@ -69,6 +70,9 @@ impl NameCounts {
     }
     pub fn mut_borrows(&self, n: &str) -> usize {
         *self.mut_borrows.get(n).unwrap_or(&0)
+    }
+    pub fn borrowed(&self, n: &str) -> bool {
+        self.imm_borrows.contains(n) || self.mut_borrows(n) != 0
     }
 
     fn bump(map: &mut BTreeMap<String, usize>, n: &str) {
@@ -147,8 +151,9 @@ impl NameCounts {
                 self.visit(b);
             }
             E::Borrow(is_mut, inner) => {
-                if *is_mut && let Exp::Variable(n) = inner.as_ref() {
-                    Self::bump(&mut self.mut_borrows, n);
+                if let Exp::Variable(n) = inner.as_ref() {
+                    if *is_mut { Self::bump(&mut self.mut_borrows, n); }
+                    else { self.imm_borrows.insert(n.clone()); }
                 }
                 self.visit(inner);
             }

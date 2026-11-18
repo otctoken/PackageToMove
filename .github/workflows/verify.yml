@@ -30,9 +30,17 @@ jobs:
       - run: npm run build
 
   rust-linux:
-    name: Vercel Rust Function Linux build and regression tests
+    name: Vercel Rust Function and Move regressions (${{ matrix.release }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: mainnet-v1.82.3
+            sha256: d616d63d90309926cf7f544633c8dd4132f762fdbba555a35c4842cfa4129379
+          - release: testnet-v1.84.0
+            sha256: 0f006fb4408bb2f867698a193d5f22f166acb9b89e0eb027c1e1b445b3b62127
     env:
       CARGO_BUILD_JOBS: '2'
       CARGO_INCREMENTAL: '0'
@@ -67,13 +75,16 @@ jobs:
       - run: npm ci
       - name: Install pinned official Sui CLI for real Move builds
         shell: bash
+        env:
+          SUI_RELEASE: ${{ matrix.release }}
+          SUI_SHA256: ${{ matrix.sha256 }}
         run: |
           set -euo pipefail
-          cli_dir="$RUNNER_TEMP/sui-1.82.3"
+          cli_dir="$RUNNER_TEMP/sui-$SUI_RELEASE"
           mkdir -p "$cli_dir"
           curl --fail --location --retry 3 --output "$cli_dir/sui.tgz" \
-            https://github.com/MystenLabs/sui/releases/download/mainnet-v1.82.3/sui-mainnet-v1.82.3-ubuntu-x86_64.tgz
-          echo "d616d63d90309926cf7f544633c8dd4132f762fdbba555a35c4842cfa4129379  $cli_dir/sui.tgz" | sha256sum --check
+            "https://github.com/MystenLabs/sui/releases/download/$SUI_RELEASE/sui-$SUI_RELEASE-ubuntu-x86_64.tgz"
+          echo "$SUI_SHA256  $cli_dir/sui.tgz" | sha256sum --check
           member="$(tar -tzf "$cli_dir/sui.tgz" | awk '/(^|\/)sui$/')"
           test -n "$member"
           test "$(printf '%s\n' "$member" | wc -l)" -eq 1
@@ -85,10 +96,15 @@ jobs:
           echo "$cli_dir/bin" >> "$GITHUB_PATH"
       - name: Build bytecode regression tools
         run: cargo +1.96.1 build --locked --target x86_64-unknown-linux-gnu --bin verify_package --bin compare_project
-      - name: Build and test both exports of the uploaded 37-module authority project
+      - name: Compare all 847 authority functions and validate both exports
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
-        run: npm run test:authority-build -- .research/ci-authority
+        run: npm run test:authority-roundtrip -- .research/ci-authority
+      - name: Round-trip a Move 2024 enum expression and a release framework call
+        if: matrix.release == 'testnet-v1.84.0'
+        env:
+          MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
+        run: npx tsx scripts/test-standalone-roundtrip.ts tests/fixtures/v184-enum-clock.json .research/ci-v184
       - name: Retain optimizer build and instruction-comparison regression
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
@@ -132,7 +148,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: move-project-validation
+          name: move-project-validation-${{ matrix.release }}
           path: |
             .research/ci-*/**/validation.json
             .research/ci-*/**/build.log

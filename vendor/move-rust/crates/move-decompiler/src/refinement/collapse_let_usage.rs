@@ -79,7 +79,9 @@ fn collapse_in_seq(items: &mut Vec<Exp>, counts: &InlineContext<'_>) -> bool {
             continue;
         }
         let x = targets[0].clone();
-        if !is_eligible(&x, counts) {
+        // Borrowing a local copy must preserve that storage location. Substituting
+        // the source variable beneath the borrow would alias the original slot.
+        if !is_eligible(&x, counts) || (matches!(rhs.as_ref(), Exp::Variable(_)) && counts.borrowed(&x)) {
             i += 1;
             continue;
         }

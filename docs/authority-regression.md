@@ -65,6 +65,24 @@ missing or added friend; `--require-exact-metadata` is retained as a compatible 
 The numerical instruction and official-source comparisons above describe the earlier
 2024 output, not a new equivalence certificate for the legacy-rendered output.
 
+## Sui 1.84.0 round trip
+
+Both exports built with the framework pinned to
+`9dc25070cf2ed18bcda1ebb095f39708638195a8`. All 37 friend tables matched.
+At the original addresses, 437 of 847 functions had identical normalized
+instructions and 410 matched the paired instruction model. The six previously
+unconfirmed functions were checked as follows.
+
+| Functions | Difference resolved | Result |
+| --- | --- | --- |
+| `execute_limit_order`, `execute_market_order` | The reconstructed loops use dispatch tags. Both operands of the extra tag equality are known integer literals on the examined path. Only that concrete equality is evaluated. | Paired paths match |
+| `place_stop_order_sltp`, `place_stop_order_standalone` | Retaining the borrow and read of a local preserves the operands leading into vector append and hash comparison. | Paired paths match |
+| `set_extra_field` | A borrow of a copied key retains its own storage slot through the map lookup. | Paired paths match |
+| `destroy_with_default` | A wildcard retains the original tag-only branch without adding an unpack of the default variant. | Normalized instructions identical |
+
+These comparisons exclude gas, VM resource limits and historical dependency
+implementations. The reconstructed projects contain zero original business tests.
+
 ## Reproduction
 
 ```sh
@@ -75,18 +93,16 @@ npm run test:authority-roundtrip
 
 `test:authority-build` verifies all module coverage, both export builds/tests, friend access
 checks and offline new-package publication input. It does not compare function instructions.
-`test:authority-roundtrip` additionally runs the strict instruction comparator and currently
-retains any unverified functions as failures; this must not be described as a passing check.
+`test:authority-roundtrip` additionally compares every original-address function and
+exits with a failure for an unverified body or a changed friend table.
 
 The subsequent [official-source investigation](source-equivalence.md) additionally compares
 whole `CompiledModule` values without metadata normalization: 5 modules match, 32 differ.
 Actual official verification with Sui 1.82.3 passes 1 of 9 packages and fails 8 on bytecode
 differences. These are different criteria; instruction-model matches cannot override them.
 
-Linux CI builds the actual Vercel Rust Function, runs both Rust test suites and installs the
-official Sui 1.82.3 Ubuntu x86_64 release pinned by SHA-256. It runs the authority **build**
-regression plus the existing optimizer build/instruction regression, retaining validation logs.
-The build job is intentionally not advertised as a proof of authority instruction equivalence.
+Linux CI builds the Vercel Rust Function and runs the Rust suites and full authority
+round trip with the checksum-pinned Sui 1.82.3 and 1.84.0 CLI releases.
 
 ```sh
 cargo test --lib

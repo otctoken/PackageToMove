@@ -39,6 +39,9 @@ fn recover(e: &mut Exp, aliases: &Aliases) -> bool {
     if let Exp::Return(es) = e {
         return es.len() == 1 && recover(&mut es[0], aliases);
     }
+    if let Exp::LetBind(_, rhs) | Exp::Assign(_, rhs) = e {
+        return recover(rhs, aliases);
+    }
     let Exp::Switch(subject, ty, arms) = e else { return false; };
     let Some(root) = identity(subject, aliases) else { return false; };
     let bodies: Vec<_> = arms.iter().map(|(_, b)| statements(b)).collect();
@@ -62,6 +65,7 @@ fn recover(e: &mut Exp, aliases: &Aliases) -> bool {
     }
     let Some((mode, operand)) = selected else { return false; };
     let mut new_arms = vec![];
+    let mut tag_only = vec![];
     for ((variant, _), body) in arms.iter().zip(&bodies) {
         let best = body.iter().filter_map(|s| match s {
             Exp::UnpackVariant(k, _, fs, _) => Some((rank(k), fs)), _ => None,
@@ -96,7 +100,15 @@ fn recover(e: &mut Exp, aliases: &Aliases) -> bool {
             identity(rhs, aliases) != Some(root.clone())
                 && !matches!(peek(rhs), Exp::Variable(n) if dead.contains(n))
         });
-        new_arms.push((*variant, pattern, Exp::Seq(rewritten)));
+        if best.is_none() { tag_only.push(new_arms.len()); }
+        new_arms.push((Some(*variant), pattern, Exp::Seq(rewritten)));
+    }
+    // A full variant jump table is exhaustive. When exactly one arm never
+    // unpacked the subject, its complement is an exact wildcard. Spelling
+    // that arm as a constructor causes Move to emit an extra value unpack.
+    if let [index] = tag_only.as_slice() {
+        let (_, fields, body) = new_arms.remove(*index);
+        new_arms.push((None, fields, body));
     }
     *e = Exp::Match(Box::new(operand), ty.clone(), new_arms);
     true

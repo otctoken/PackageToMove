@@ -251,6 +251,18 @@ fn advance(s: &mut State, f: &Function<RcIdentifier>) -> Result<Stop, String> {
             }
             B::Eq | B::Neq | B::Lt | B::Ge | B::Gt | B::Le => {
                 let mut args = s.args(2)?;
+                // Structured loops can compile to a dispatch on a literal tag.
+                // Evaluate equality only for concrete, same-type integer bytes.
+                // A symbolic operand (including a call result) still branches.
+                if matches!(op, B::Eq | B::Neq)
+                    && let [V::Lit(left), V::Lit(right)] = args.as_slice()
+                    && let (Some((lt, lv)), Some((rt, rv))) = (left.split_once(':'), right.split_once(':'))
+                    && lt == rt && matches!(lt, "U8" | "U16" | "U32" | "U64" | "U128" | "U256")
+                {
+                    let equal = (lv == rv) == matches!(op, B::Eq);
+                    s.stack.push(literal(Type::<RcIdentifier>::Bool, &[u8::from(equal)]));
+                    continue;
+                }
                 let key = if matches!(op, B::Eq | B::Neq) {
                     "Eq"
                 } else {
@@ -873,6 +885,18 @@ mod tests {
             matched,
             "{result:?}"
         );
+    }
+
+    #[test]
+    fn literal_dispatch_checks_the_reachable_result_and_keeps_symbolic_conditions() {
+        let direct = module(vec![T::U64], vec![T::U64], vec![], vec![I::LdU64(11), I::Ret]);
+        let dispatch = |tag| module(vec![T::U64], vec![T::U64], vec![], vec![
+            tag, I::LdU64(4), I::Eq, I::BrFalse(6),
+            I::LdU64(11), I::Ret, I::LdU64(22), I::Ret,
+        ]);
+        check(direct.clone(), dispatch(I::LdU64(4)), true);
+        check(direct.clone(), dispatch(I::LdU64(5)), false);
+        check(direct, dispatch(I::CopyLoc(0)), false);
     }
 
     fn enum_reference_module(

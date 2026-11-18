@@ -5,8 +5,15 @@ export function skipSystemDecompilation(id: string): boolean {
   return /^0x0*[1-8]$/i.test(id);
 }
 
-export function systemDependency(id: string): string | null {
-  if (/^0x0*3$/i.test(id)) return 'sui_system = { system = "sui_system" }';
-  // std/sui are implicit in the current official package manager.
-  return null;
+// Build profile for both export modes. The target network still supplies
+// publication identities; its linkage version is not a Git revision.
+export const buildFramework = {
+  release: "testnet-v1.84.0",
+  revision: "9dc25070cf2ed18bcda1ebb095f39708638195a8",
+  repository: "https://github.com/MystenLabs/sui.git",
+} as const;
+
+export function frameworkDependency(name: "std" | "sui" | "sui_system"): string {
+  const directory = {std: "move-stdlib", sui: "sui-framework", sui_system: "sui-system"}[name];
+  return `${name} = { git = "${buildFramework.repository}", subdir = "crates/sui-framework/packages/${directory}", rev = "${buildFramework.revision}" }`;
 }

@@ -64,17 +64,15 @@ try {
       for(const pkg of manifest.packages) for(const mod of pkg.modules) {
         const actual=compiled.get(mod.compiledModuleId);
         if(!actual) throw new Error('Missing compiled module: '+mod.compiledModuleId);
-        let original;
-        if(mod.originalBytecodeFile) {
-          const path=resolve(root,mod.originalBytecodeFile), rel=relative(root,path);
-          if(rel.startsWith('..')||isAbsolute(rel)) throw new Error('Invalid original bytecode path');
-          const bytes=Buffer.from(readFileSync(path,'utf8').trim(),'base64');
-          if(createHash('sha256').update(bytes).digest('hex')!==mod.verification.bytecodeSha256) throw new Error('Original bytecode hash mismatch');
-          original=readMoveAcl(bytes);
-          if(original.moduleId!==pkg.originalId+'::'+mod.name) throw new Error('Original bytecode identity mismatch');
-          const expectedOriginal=mod.expectedCompiledFriends.map(id=>mod.relocated&&id.startsWith('0x'+'0'.repeat(64)+'::') ? pkg.originalId+id.slice(66) : id).sort();
-          if(JSON.stringify(original.friends)!==JSON.stringify(expectedOriginal)) throw new Error('Original friend table differs from manifest');
-        }
+        if(!mod.originalBytecodeFile) throw new Error('Missing original bytecode for ACL check: '+mod.compiledModuleId);
+        const path=resolve(root,mod.originalBytecodeFile), rel=relative(root,path);
+        if(rel.startsWith('..')||isAbsolute(rel)) throw new Error('Invalid original bytecode path');
+        const bytes=Buffer.from(readFileSync(path,'utf8').trim(),'base64');
+        if(createHash('sha256').update(bytes).digest('hex')!==mod.verification.bytecodeSha256) throw new Error('Original bytecode hash mismatch');
+        const original=readMoveAcl(bytes);
+        if(original.moduleId!==pkg.originalId+'::'+mod.name) throw new Error('Original bytecode identity mismatch');
+        const expectedOriginal=mod.expectedCompiledFriends.map(id=>mod.relocated&&id.startsWith('0x'+'0'.repeat(64)+'::') ? pkg.originalId+id.slice(66) : id).sort();
+        if(JSON.stringify(original.friends)!==JSON.stringify(expectedOriginal)) throw new Error('Original friend table differs from manifest');
         if(JSON.stringify(actual.friends)!==JSON.stringify(mod.expectedCompiledFriends)) {
           report.friendTablesIdentical=false;
           report.friendAclDifferences.push({module:mod.compiledModuleId,originalFriends:mod.expectedCompiledFriends,compiledFriends:actual.friends,

@@ -12,7 +12,9 @@ import type {DecompileMetadata, PackageResult} from '../lib/types';
 
 const fixturePath=process.argv[2];
 assert(fixturePath,'Usage: tsx scripts/test-standalone-roundtrip.ts <fixture.json> [new-output-directory]');
-const input=readFileSync(fixturePath,'utf8'), p=JSON.parse(input).data.object.package;
+const input=readFileSync(fixturePath,'utf8'), fixture=JSON.parse(input), p=fixture.data.object.package;
+const network=fixture.network ?? 'mainnet';
+assert(['mainnet','testnet','devnet'].includes(network),'Unsupported fixture network');
 assert(p.modules.nodes.length>0,'Empty fixture');
 for(const dependency of p.linkage) {
   assert(BigInt(dependency.upgradedId)>BigInt(0) && BigInt(dependency.upgradedId)<=BigInt(8),
@@ -50,7 +52,7 @@ const pkg:PackageResult={id:p.address,shortId:p.address,version:String(p.version
   depth:0,status:'ok',modules,dependencies:p.linkage.map((d:{upgradedId:string})=>d.upgradedId),
   dependencyVersions:Object.fromEntries(p.linkage.map((d:{upgradedId:string;version:number})=>[d.upgradedId,String(d.version)]))};
 for(const mode of ['audit','new-package'] as const) {
-  const project=join(output,mode),files=moveProjectFiles('mainnet',[pkg],sources,metadata,mode);
+  const project=join(output,mode),files=moveProjectFiles(network,[pkg],sources,metadata,mode);
   assert.equal(Object.keys(files).filter(f=>/^sources\/.*\.move$/.test(f)).length,modules.length);
   assert.equal(Object.keys(files).filter(f=>f.endsWith('.mv.base64')).length,modules.length);
   for(const [name,text] of Object.entries(files)) {
@@ -65,7 +67,7 @@ for(const mode of ['audit','new-package'] as const) {
   assert.equal(validation.publishInputGenerated,mode==='new-package');
 }
 const audit=join(output,'audit');
-run('sui',['move','build','--path',audit,'--build-env','mainnet','--silence-warnings'],undefined,process.platform==='win32');
+run('sui',['move','build','--path',audit,'--build-env',network,'--silence-warnings'],undefined,process.platform==='win32');
 const comparison=spawnSync(binary('compare_project'),[fixturePath,join(audit,'build'),join(output,'instruction-comparison.json')],
   {encoding:'utf8',timeout:900000,maxBuffer:64*1024*1024});
 writeFileSync(join(output,'instruction-summary.json'),comparison.stdout || '{}');

@@ -1,5 +1,5 @@
 import type { AnalyzeResult, DecompileMetadata, PackageResult } from "./types";
-import { skipSystemDecompilation, systemDependency } from "./system-addresses";
+import { buildFramework, frameworkDependency, skipSystemDecompilation } from "./system-addresses";
 import { relocateMove, rootModuleIdentities } from "./relocate-move";
 import { projectVerifier } from "./project-verifier";
 import { adaptFriendSyntax } from "./friend-compatibility";
@@ -86,8 +86,7 @@ export function moveProjectFiles(
     const edition = preserveFriends ? 'legacy' : '2024';
     const deps = pkg.dependencies.flatMap((id) => {
       if (skipSystemDecompilation(id)) {
-        const declaration = systemDependency(id);
-        return declaration ? [declaration] : [];
+        return /^0x0*3$/i.test(id) ? [frameworkDependency("sui_system")] : [];
       }
       if (!ids.has(id)) throw new Error(`Missing dependency ${id}`);
       const path = pkg.id === root.id ? `dependencies/${id}` :
@@ -99,8 +98,9 @@ export function moveProjectFiles(
     files[`${prefix}Move.toml`] = [
       "# Reconstructed project. See manifest.json for provenance and verification limits.",
       "[package]", `name = "${packageName(pkg.id)}"`, `edition = "${edition}"`,
+      'implicit-dependencies = false',
       ...(newPackage && pkg.id === root.id ? [] : [`published-at = "${pkg.id}"`]),
-      "", "[dependencies]", ...deps, "",
+      "", "[dependencies]", frameworkDependency("std"), frameworkDependency("sui"), ...deps, "",
     ].join("\n");
     const moduleAddresses = new Set<string>();
     const modules = pkg.modules.map((mod) => {
@@ -165,8 +165,7 @@ export function moveProjectFiles(
       dependencies: pkg.dependencies, declaredDependencyVersions: pkg.dependencyVersions,
       skippedSystemDependencies: pkg.dependencies.filter(skipSystemDecompilation).map(id => ({
         id, declaredVersion: pkg.dependencyVersions?.[id] ?? null,
-        buildResolution: /^0x0*[12]$/.test(id) ? "sui-cli-implicit" :
-          systemDependency(id) ? "sui-cli-system" : "excluded-address-not-a-configured-package",
+        buildResolution: /^0x0*[123]$/i.test(id) ? "pinned-framework" : "excluded-address-not-a-configured-package",
       })),
       resolvedDependencyVersions: Object.fromEntries(pkg.dependencies.map((id) =>
         [id, packages.find((p) => p.id === id)?.version])), modules });
@@ -178,7 +177,7 @@ export function moveProjectFiles(
       addressLiteralsPreserved:true, dependencyAddressesPreserved:true} : null,
     publishVerified: false, businessTestsVerified: false,
     packageResolution: "exact-immutable-object-v1", generatedAt: new Date().toISOString(),
-    systemDependencyPolicy: "skip-0x1-through-0x8-use-official-toolchain",
+    systemDependencyPolicy: "pinned-official-build-framework", buildFramework,
     buildVerified: false, semanticEquivalenceVerified: false, packages: manifest }, null, 2);
   files["README.md"] = `# Reconstructed Move project
 
@@ -212,8 +211,9 @@ verify.mjs compares EVERY recompiled module's friend list with the original list
 It records missingFriends and addedFriends in validation.json and exits nonzero
 on any difference. --require-exact-metadata remains accepted; exact is now default.
 This does not establish semantic equivalence or upgrade compatibility.
-Addresses 0x1 through 0x8 are excluded from decompilation. std/sui are implicit
-official toolchain dependencies; 0x3 uses system = "sui_system". 0x5..0x8 are
+Addresses 0x1 through 0x8 are excluded from decompilation. The build pins std,
+sui and any sui_system dependency to the official ${buildFramework.release}
+framework commit ${buildFramework.revision}. 0x5..0x8 are
 objects, not packages. No package mapping is invented for 0x4.
 The original linkage versions remain in manifest.json. Toolchain-resolved
 framework sources are NOT asserted to match those historical versions. Retain
