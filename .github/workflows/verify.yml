@@ -109,6 +109,11 @@ jobs:
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
         run: npm run test:optimizer-roundtrip -- .research/ci-optimizer
+      - name: Round-trip nested enum matches and loop guards in the full lending package
+        if: matrix.release == 'testnet-v1.84.0'
+        env:
+          MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug
+        run: npx tsx scripts/test-optimizer-roundtrip.ts --fixture tests/fixtures/nested-match-loop-project.json .research/ci-nested-match-loop
       - name: Compare all 628 events project functions and preserve all friend permissions
         env:
           MOVE_CHECKER_BIN_DIR: target/x86_64-unknown-linux-gnu/debug

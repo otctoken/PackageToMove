@@ -36,11 +36,25 @@ fn discarded(e: &Exp) -> Option<&Exp> {
 }
 fn recover(e: &mut Exp, aliases: &Aliases) -> bool {
     let e = peek_mut(e);
-    if let Exp::Return(es) = e {
-        return es.len() == 1 && recover(&mut es[0], aliases);
-    }
-    if let Exp::LetBind(_, rhs) | Exp::Assign(_, rhs) = e {
-        return recover(rhs, aliases);
+    match e {
+        Exp::LetBind(_, rhs) | Exp::Assign(_, rhs) | Exp::Abort(rhs) | Exp::Borrow(_, rhs) => {
+            return recover(rhs, aliases);
+        }
+        Exp::Primitive { args, .. } | Exp::Data { args, .. } | Exp::Call(_, args) | Exp::Return(args) => {
+            // A preceding effectful argument may have reassigned one of the aliases.
+            // Keep the switch at its original evaluation point inside the enclosing operator.
+            for arg in args {
+                if recover(arg, aliases) {
+                    return true;
+                }
+                if !matches!(peek(arg), Exp::Constant(_) | Exp::Value(_) | Exp::Variable(_)) {
+                    break;
+                }
+            }
+            return false;
+        }
+        Exp::IfElse(test, _, _) => return recover(test, aliases),
+        _ => {}
     }
     let Exp::Switch(subject, ty, arms) = e else { return false; };
     let Some(root) = identity(subject, aliases) else { return false; };
@@ -197,6 +211,34 @@ mod tests {
     #[test]
     fn never_lift_an_unpack_of_a_different_enum_value() {
         let mut e = fixture("other", false);
+        assert!(!refine(&mut e));
+    }
+    #[test]
+    fn match_inside_negated_return_preserves_the_operator_and_owned_binding() {
+        use move_stackless_bytecode_2::ast::PrimitiveOp;
+        let mut e = fixture("v", false);
+        let Exp::Seq(items) = &mut e else { panic!() };
+        let mut switch = items.pop().unwrap();
+        let Exp::Switch(_, _, arms) = &mut switch else { panic!() };
+        let Exp::Seq(body) = &mut arms[0].1 else { panic!() };
+        *body.last_mut().unwrap() = var("owned");
+        items.push(Exp::Return(vec![Exp::Primitive {
+            op: PrimitiveOp::Not,
+            args: vec![switch],
+        }]));
+        assert!(refine(&mut e));
+        let Exp::Seq(items) = e else { panic!() };
+        let Exp::Return(values) = &items[1] else { panic!() };
+        let Exp::Primitive { op: PrimitiveOp::Not, args } = &values[0] else { panic!() };
+        assert!(matches!(&args[0], Exp::Match(subject, _, _) if matches!(subject.as_ref(), Exp::Variable(n) if n == "v")));
+    }
+    #[test]
+    fn never_reuse_an_alias_after_a_sibling_operand_reassigns_it() {
+        let mut e = fixture("v", false);
+        let Exp::Seq(items) = &mut e else { panic!() };
+        let switch = items.pop().unwrap();
+        let replace_tag = Exp::Assign(vec!["tag".into()], Box::new(var("another_tag")));
+        items.push(Exp::Return(vec![replace_tag, switch]));
         assert!(!refine(&mut e));
     }
     #[test]
